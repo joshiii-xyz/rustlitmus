@@ -181,13 +181,17 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
     vals.insert("x1".into(), Val::Regs(0));
     let mut out = Vec::new();
     let mut outputs: BTreeMap<usize, String> = BTreeMap::new();
-    let mut init: Vec<(String, String)> = vec![("X0".into(), litmus.locations[0].clone())];
+    let mut init: Vec<(String, String)> = Vec::new();
     let mut folded = Vec::new();
     let nlocs = litmus.locations.len();
     let unsupported = |line: &Line, reason: &str| LiftError::Unsupported { thread: t, line: line.raw.trim().to_string(), reason: reason.into() };
 
-    // Resolve a memory operand to `[Xn]` where Xn is initialised to the location symbol.
-    // Offset forms `[x0, #64]` are rewritten to a synthetic pointer register `x2k`.
+    // Resolve a memory operand to `[X2k]`, a dedicated pointer register for location k that
+    // is initialised to the location symbol in the herd init block. The compiler's own
+    // pointer registers (x0, `add x8, x0, #64`, ...) are *not* used as herd operands: a
+    // register herd initialises cannot also be written earlier in the thread (e.g. x8 used
+    // for data before becoming a pointer), and this keeps the lifted test independent of
+    // register allocation. Pointer-producing instructions are folded (recorded, not emitted).
     let resolve = |op: &str, vals: &BTreeMap<String, Val>, init: &mut Vec<(String, String)>, line: &Line| -> Result<String, LiftError> {
         let (base, off) = a64_mem(op).ok_or_else(|| unsupported(line, "unparsable memory operand"))?;
         match vals.get(&base) {
@@ -197,7 +201,7 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                     return Err(unsupported(line, "address does not resolve to a location"));
                 }
                 let loc = (addr / 64) as usize;
-                let reg = if off == 0 { base.to_uppercase() } else { format!("X{}", 20 + loc) };
+                let reg = format!("X{}", 20 + loc);
                 if !init.iter().any(|(r, _)| *r == reg) {
                     init.push((reg.clone(), litmus.locations[loc].clone()));
                 }
@@ -224,13 +228,10 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                 } else {
                     let src = a64_base_reg(&ops[1]);
                     let v = if src == "zr" { Val::Imm(0) } else { vals.get(&src).cloned().unwrap_or(Val::Unknown) };
-                    if let Val::Locs(b) = &v {
-                        if b % 64 == 0 && ((*b / 64) as usize) < nlocs {
-                            init.push((dst.to_uppercase(), litmus.locations[(*b / 64) as usize].clone()));
-                            vals.insert(dst, v);
-                            folded.push(line.raw.trim().to_string());
-                            continue;
-                        }
+                    if matches!(v, Val::Locs(_) | Val::Regs(_)) {
+                        vals.insert(dst, v);
+                        folded.push(format!("{} (pointer copy)", line.raw.trim()));
+                        continue;
                     }
                     vals.insert(dst, v);
                     out.push(format!("MOV {}, {}", up(0), up(1)));
@@ -244,9 +245,8 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                     (Some(Val::Locs(b)), Some(i)) => {
                         let addr = b + i;
                         if addr % 64 == 0 && ((addr / 64) as usize) < nlocs {
-                            vals.insert(dst.clone(), Val::Locs(addr));
-                            init.push((dst.to_uppercase(), litmus.locations[(addr / 64) as usize].clone()));
-                            folded.push(line.raw.trim().to_string());
+                            vals.insert(dst, Val::Locs(addr));
+                            folded.push(format!("{} (pointer arithmetic)", line.raw.trim()));
                         } else {
                             return Err(unsupported(line, "pointer arithmetic does not hit a location"));
                         }
@@ -791,13 +791,29 @@ mod tests {
         let t0 = "rl_thread_0:\n\tmov\tw8, #1\n\tadd\tx9, x0, #64\n\tstlr\tw8, [x0]\n\tldar\tw8, [x9]\n\tstr\tw8, [x1]\n\tret\n";
         let t1 = "rl_thread_1:\n\tmov\tw8, #1\n\tstlr\tw8, [x0, #64]\n\tldar\tw8, [x0]\n\tstr\tw8, [x1]\n\tret\n";
         let l = lift(&sb(), &cfg("aarch64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
-        assert!(l.litmus_text.contains("0:X0=x;"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("0:X9=y;"), "{}", l.litmus_text);
+        assert!(l.litmus_text.contains("0:X20=x;"), "{}", l.litmus_text);
+        assert!(l.litmus_text.contains("0:X21=y;"), "{}", l.litmus_text);
         assert!(l.litmus_text.contains("1:X21=y;"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("STLR W8, [X0]"));
-        assert!(l.litmus_text.contains("LDAR W8, [X9]"));
+        assert!(l.litmus_text.contains("STLR W8, [X20]"));
+        assert!(l.litmus_text.contains("LDAR W8, [X21]"));
         assert!(l.litmus_text.contains("STLR W8, [X21]"));
+        // Compiler registers are never used as herd pointer operands.
+        assert!(!l.litmus_text.contains("[X0]") && !l.litmus_text.contains("[X9]"), "{}", l.litmus_text);
         assert!(l.litmus_text.contains("locations [0:X24; 1:X24;]"), "{}", l.litmus_text);
+    }
+
+    /// Regression: rustc used `w8` for the store value and then `x8` as the pointer to `y`
+    /// (`add x8, x0, #64`). Using compiler registers as herd pointer operands then required
+    /// initialising X8 in the herd init block while the thread also wrote it as data.
+    #[test]
+    fn data_register_later_reused_as_pointer() {
+        let t0 = "rl_thread_0:\n\tmov\tw8, #1\n\tstr\tw8, [x0]\n\tadd\tx8, x0, #64\n\tldar\tw8, [x8]\n\tstr\tw8, [x1]\n\tret\n";
+        let t1 = "rl_thread_1:\n\tmov\tw8, #1\n\tadd\tx9, x0, #64\n\tstlr\tw8, [x9]\n\tldar\tw8, [x0]\n\tstr\tw8, [x1]\n\tret\n";
+        let l = lift(&sb(), &cfg("aarch64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
+        assert!(l.litmus_text.contains("MOV W8, #1 | MOV W8, #1"), "{}", l.litmus_text);
+        assert!(l.litmus_text.contains("STR W8, [X20] | STLR W8, [X21]"), "{}", l.litmus_text);
+        assert!(l.litmus_text.contains("LDAR W8, [X21] | LDAR W8, [X20]"), "{}", l.litmus_text);
+        assert!(!l.litmus_text.contains("0:X8="), "{}", l.litmus_text);
     }
 
     #[test]

@@ -144,7 +144,41 @@ same-thread rule so it is allowed. Miri's data-race detector explicitly implemen
 
 **Falsification.** herd7 rc11 and Miri agree on the outcome set for these instances.
 
-**Status.** active; a *source-model vs source-model* disagreement that the system should
-surface as `LaterLayerWeaker(SourceModel → SourceModelChecker)` or as an emulator outcome
-outside the herd prediction. This is a known spec change, so it is a **control**, not a
-discovery — but it tests that the machinery detects model-version disagreement.
+**Status.** **supported (as a control), resolved 2026-09-03.**
+
+**Evidence (observed).** `MP+relseq+rlx-rel-rlx-acq-rlx`
+(`T0: W_rlx x=1; W_rel y=1; W_rlx y=2 ‖ T1: r0=R_acq y; r1=R_rlx x`):
+
+| Layer | Outcome set | `r0=2 ∧ r1=0` |
+| --- | --- | --- |
+| herd7 `rc11.cat` (stock, RC11 release sequences) | 4 states | **forbidden** |
+| herd7 `c11_orig/simp/partialSC/base.cat`, `simple-c11.cat` | 4 states | forbidden |
+| herd7 `models/rc11-p0982.cat` (ours: `rs = [W]; (rf; rmw)*`) | 5 states | **allowed** |
+| Miri weak-memory (8 seeds × 100) | 5 outcomes | **observed** |
+| Miri-GenMC (exhaustive) | 5 executions | **allowed** |
+| herd7 `x86tso-mixed.cat` on lifted x86-64 asm | 4 states | forbidden |
+| herd7 `aarch64.cat` on lifted AArch64 asm (`str; stlr; str`) | 4 states | forbidden |
+| x86-64 hardware (20k rounds) | 3 outcomes | not observed |
+
+With stock `rc11.cat`, the system reports the earliest divergence at
+**source-model → source-emulator** ("Miri observed an outcome herd forbids"), which is the
+correct diagnosis of a *model-version mismatch*: every herd7-shipped C11 model implements
+the C++11/17 release-sequence rule (same-thread relaxed stores continue the sequence), while
+Rust's documented model is C++20 (P0982), which Miri and GenMC implement. With
+`rc11-p0982.cat` the source layers agree and the earliest divergence moves to
+**source-model-checker → arch-model**, classified `LaterLayerStronger` (the x86 and AArch64
+mappings preserve same-thread store order, so the hardware cannot show the C++20-only
+outcome). Both are the expected results.
+
+**Consequences.**
+1. The default source model for RustLitmus is now `models/rc11-p0982.cat`; the choice is
+   recorded in every bundle's limitations text, and stock `rc11.cat` remains selectable.
+2. Any tool that uses herd7's stock C11 models as "the" source model for Rust (or C++20)
+   over-approximates the forbidden set on release-sequence tests. Téléchat's published
+   evaluation uses herd's C11 models for C/C++; whether their pipeline patched `rs` is
+   not stated in the CGO'24 paper we read. Worth a note to the herdtools7 maintainers:
+   a `c20.cat`/P0982 variant does not ship (checked `herd/libdir` in 7.58).
+3. This is a **control**, not a discovery: P0982 is a 2018 committee paper. Its value here
+   is that the system localised a source-model/source-emulator disagreement to a specific
+   definition (`rs`) with a one-line model patch as the falsification experiment.
+
