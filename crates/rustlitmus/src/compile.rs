@@ -17,7 +17,7 @@
 
 use crate::process::{run, RunSpec};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -248,14 +248,110 @@ fn ordering_from_mir(s: &str) -> Option<String> {
     None
 }
 
+fn mir_block_label(line: &str) -> Option<usize> {
+    let line = line.trim_start();
+    let rest = line.strip_prefix("bb")?;
+    let digits: String = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    let suffix = rest.get(digits.len()..)?.trim_start();
+    if digits.is_empty() || !suffix.starts_with(':') {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn mir_block_target(fragment: &str) -> Option<usize> {
+    let rest = fragment.trim_start().strip_prefix("bb")?;
+    let digits: String = rest
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+}
+
+enum MirTerminator {
+    Next(usize),
+    Return,
+}
+
+fn mir_terminator(lines: &[&str]) -> Option<MirTerminator> {
+    for line in lines.iter().rev() {
+        let line = line.trim();
+        if line == "return;" {
+            return Some(MirTerminator::Return);
+        }
+        if let Some(target) = line.strip_prefix("goto ->").and_then(mir_block_target) {
+            return Some(MirTerminator::Next(target));
+        }
+        if let Some(target) = line
+            .split_once("return: ")
+            .and_then(|(_, target)| mir_block_target(target))
+        {
+            return Some(MirTerminator::Next(target));
+        }
+        if line.contains("switchInt") || line.contains("otherwise:") {
+            return None;
+        }
+    }
+    None
+}
+
+/// Put lines from deterministic, straight-line MIR blocks in execution order.
+///
+/// `--emit=mir` orders basic blocks by their numeric label, not necessarily by the
+/// successor relation. The renderer only emits straight-line thread bodies, so following
+/// `return: bbN` and `goto -> bbN` prevents false event reordering. For control flow the
+/// extractor does not understand, callers retain the original textual order instead.
+fn mir_execution_lines(body: &str) -> Option<Vec<&str>> {
+    let mut blocks: BTreeMap<usize, Vec<&str>> = BTreeMap::new();
+    let mut current = None;
+    for line in body.lines() {
+        if let Some(block) = mir_block_label(line) {
+            if blocks.insert(block, Vec::new()).is_some() {
+                return None;
+            }
+            current = Some(block);
+        } else if let Some(block) = current {
+            blocks.get_mut(&block)?.push(line);
+        }
+    }
+
+    let mut current = 0;
+    let mut visited = BTreeSet::new();
+    let mut ordered = Vec::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        let lines = blocks.get(&current)?;
+        ordered.extend(lines.iter().copied());
+        match mir_terminator(lines)? {
+            MirTerminator::Next(next) => current = next,
+            MirTerminator::Return => break,
+        }
+    }
+
+    let unvisited_memory_block = blocks.iter().any(|(block, lines)| {
+        !visited.contains(block)
+            && lines
+                .iter()
+                .any(|line| line.contains("atomic") || line.contains("fence("))
+    });
+    (!unvisited_memory_block).then_some(ordered)
+}
+
 /// Events from *built* MIR: calls like `Atomic::<u32>::store(move _4, const 1_u32, move _5)`.
 /// Orderings are not resolved at this stage (they are `move _5` locals), so we record
 /// the method name and leave the ordering as `?` unless a constant is visible.
 pub fn events_from_mir_built(body: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
-    for line in body.lines() {
+    let lines = mir_execution_lines(body).unwrap_or_else(|| body.lines().collect());
+    for line in lines {
         let l = line.trim();
-        if !l.contains("Atomic::<u32>::") && !l.contains("atomic::fence") {
+        let is_fence = l.contains("atomic::fence") || l.contains("fence(");
+        if !l.contains("Atomic::<u32>::") && !is_fence {
             continue;
         }
         let ord = ordering_from_mir(l).unwrap_or_else(|| "?".into());
@@ -287,7 +383,7 @@ pub fn events_from_mir_built(body: &str) -> LayerEvents {
                 success: ord,
                 failure: "?".into(),
             });
-        } else if l.contains("atomic::fence(") {
+        } else if is_fence {
             ev.events.push(Event::Fence { ord });
         } else {
             ev.unparsed.push(l.to_string());
@@ -329,17 +425,24 @@ fn mir_field_to_loc(body: &str, local: &str) -> Option<String> {
 /// Events from optimized MIR, where atomics are intrinsic calls with resolved orderings.
 pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
-    for line in body.lines() {
+    let lines = mir_execution_lines(body).unwrap_or_else(|| body.lines().collect());
+    for line in lines {
         let l = line.trim();
+        let is_fence = l.contains("atomic_fence") || l.contains("fence(");
         let is_atomic = l.contains("atomic::atomic_")
             || l.contains("atomic_xadd")
             || l.contains("atomic_xchg")
             || l.contains("atomic_cxchg")
             || l.contains("atomic_compare_exchange")
-            || l.contains("atomic_fence")
+            || is_fence
             || l.contains("atomic_store")
             || l.contains("atomic_load");
         if !is_atomic || !l.contains("-> [") {
+            continue;
+        }
+        if is_fence {
+            let ord = intrinsic_ordering(l).unwrap_or_else(|| "?".into());
+            ev.events.push(Event::Fence { ord });
             continue;
         }
         // Pointer operand is the first `move _N` after `(`.
@@ -416,8 +519,6 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
                 success,
                 failure,
             });
-        } else if l.contains("atomic_fence") {
-            ev.events.push(Event::Fence { ord });
         } else {
             ev.unparsed.push(l.to_string());
         }
@@ -812,6 +913,68 @@ fn main() -> () {
                     loc: "loc1".into(),
                     op: "add".into(),
                     ord: "acq_rel".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn extracts_mir_fence_call() {
+        let mir = r#"
+fn rl_thread_0(_1: &Locs) -> () {
+    bb0: {
+        _3 = fence(const std::sync::atomic::Ordering::SeqCst) -> [return: bb1, unwind terminate(abi)];
+    }
+}
+"#;
+        let f = extract_mir_fn(mir, "rl_thread_0").unwrap();
+        let expected = LayerEvents {
+            events: vec![Event::Fence {
+                ord: "seq_cst".into(),
+            }],
+            unparsed: Vec::new(),
+        };
+        assert_eq!(events_from_mir_built(&f), expected);
+        assert_eq!(events_from_mir_optimized(&f), expected);
+    }
+
+    #[test]
+    fn orders_mir_events_by_control_flow() {
+        let mir = r#"
+fn rl_thread_0(_1: &Locs) -> () {
+    bb0: {
+        _7 = &raw const (((*_1).0: std::sync::atomic::Atomic<u32>).0: std::cell::UnsafeCell<std::sync::atomic::private::Align4<u32>>);
+        _6 = copy _7 as *mut u32 (PtrToPtr);
+        _5 = atomic::atomic_store::<u32>(move _6, const 1_u32, const std::sync::atomic::Ordering::Relaxed) -> [return: bb2, unwind terminate(abi)];
+    }
+    bb1: {
+        _9 = &raw const (((*_1).2: std::sync::atomic::Atomic<u32>).0: std::cell::UnsafeCell<std::sync::atomic::private::Align4<u32>>);
+        _8 = copy _9 as *const u32 (PtrToPtr);
+        _4 = atomic::atomic_load::<u32>(move _8, const std::sync::atomic::Ordering::Relaxed) -> [return: bb3, unwind terminate(abi)];
+    }
+    bb2: {
+        _3 = fence(const std::sync::atomic::Ordering::SeqCst) -> [return: bb1, unwind terminate(abi)];
+    }
+    bb3: {
+        return;
+    }
+}
+"#;
+        let f = extract_mir_fn(mir, "rl_thread_0").unwrap();
+        let ev = events_from_mir_optimized(&f);
+        assert_eq!(
+            ev.events,
+            vec![
+                Event::Store {
+                    loc: "loc0".into(),
+                    ord: "relaxed".into(),
+                },
+                Event::Fence {
+                    ord: "seq_cst".into(),
+                },
+                Event::Load {
+                    loc: "loc1".into(),
+                    ord: "relaxed".into(),
                 },
             ]
         );
