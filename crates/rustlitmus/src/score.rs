@@ -42,7 +42,10 @@ pub enum Bucket {
 }
 
 fn is_source(l: Layer) -> bool {
-    matches!(l, Layer::SourceModel | Layer::SourceEmulator | Layer::SourceModelChecker)
+    matches!(
+        l,
+        Layer::SourceModel | Layer::SourceEmulator | Layer::SourceModelChecker
+    )
 }
 
 pub fn score(b: &Bundle) -> Score {
@@ -50,8 +53,18 @@ pub fn score(b: &Bundle) -> Score {
     let mut bucket = Bucket::Consistent;
 
     // 1. Observed outside prediction (strongest): weight by which prediction was violated.
-    for c in b.localization.adjacent.iter().chain(b.localization.against_hardware.iter()) {
-        if let Classification::ObservedOutsidePrediction { layer_pred, layer_obs, outcomes } = &c.classification {
+    for c in b
+        .localization
+        .adjacent
+        .iter()
+        .chain(b.localization.against_hardware.iter())
+    {
+        if let Classification::ObservedOutsidePrediction {
+            layer_pred,
+            layer_obs,
+            outcomes,
+        } = &c.classification
+        {
             let w = match (layer_pred, layer_obs) {
                 // Hardware contradicting the architecture model on *its own* compiled code:
                 // either the model, the lifter, or the silicon is wrong. Very high.
@@ -64,17 +77,56 @@ pub fn score(b: &Bundle) -> Score {
                 (Layer::SourceModel | Layer::SourceModelChecker, Layer::SourceEmulator) => 5.0,
                 _ => 3.0,
             };
-            signals.push(Signal { name: "observed_outside_prediction".into(), value: w * outcomes.len() as f64, note: format!("{} observed {} outcome(s) forbidden by {}", layer_obs.name(), outcomes.len(), layer_pred.name()) });
-            bucket = if matches!(layer_obs, Layer::Hardware) { Bucket::CandidateDefect } else if bucket != Bucket::CandidateDefect { Bucket::OracleDisagreement } else { bucket };
+            signals.push(Signal {
+                name: "observed_outside_prediction".into(),
+                value: w * outcomes.len() as f64,
+                note: format!(
+                    "{} observed {} outcome(s) forbidden by {}",
+                    layer_obs.name(),
+                    outcomes.len(),
+                    layer_pred.name()
+                ),
+            });
+            bucket = if matches!(layer_obs, Layer::Hardware) {
+                Bucket::CandidateDefect
+            } else if bucket != Bucket::CandidateDefect {
+                Bucket::OracleDisagreement
+            } else {
+                bucket
+            };
         }
     }
     // 2. Later exhaustive layer weaker than an earlier exhaustive layer.
     for c in &b.localization.adjacent {
-        if let Classification::LaterLayerWeaker { earlier, later, outcomes } = &c.classification {
-            let w = if is_source(*earlier) && !is_source(*later) { 7.0 } else if is_source(*earlier) && is_source(*later) { 4.0 } else { 3.0 };
-            signals.push(Signal { name: "later_layer_weaker".into(), value: w * outcomes.len() as f64, note: format!("{} allows {} outcome(s) {} forbids", later.name(), outcomes.len(), earlier.name()) });
+        if let Classification::LaterLayerWeaker {
+            earlier,
+            later,
+            outcomes,
+        } = &c.classification
+        {
+            let w = if is_source(*earlier) && !is_source(*later) {
+                7.0
+            } else if is_source(*earlier) && is_source(*later) {
+                4.0
+            } else {
+                3.0
+            };
+            signals.push(Signal {
+                name: "later_layer_weaker".into(),
+                value: w * outcomes.len() as f64,
+                note: format!(
+                    "{} allows {} outcome(s) {} forbids",
+                    later.name(),
+                    outcomes.len(),
+                    earlier.name()
+                ),
+            });
             if bucket == Bucket::Consistent || bucket == Bucket::MappingStronger {
-                bucket = if is_source(*later) { Bucket::OracleDisagreement } else { Bucket::CandidateDefect };
+                bucket = if is_source(*later) {
+                    Bucket::OracleDisagreement
+                } else {
+                    Bucket::CandidateDefect
+                };
             }
         }
         if let Classification::LaterLayerStronger { .. } = &c.classification {
@@ -83,34 +135,75 @@ pub fn score(b: &Bundle) -> Score {
                 bucket = Bucket::MappingStronger;
             }
         }
-        if let Classification::ExplainedByModelGap { axiom, outcomes, .. } = &c.classification {
-            signals.push(Signal { name: "explained_by_model_gap".into(), value: 0.5, note: format!("{} outcome(s) admitted only when `{axiom}` is dropped from the source model", outcomes.len()) });
+        if let Classification::ExplainedByModelGap {
+            axiom, outcomes, ..
+        } = &c.classification
+        {
+            signals.push(Signal {
+                name: "explained_by_model_gap".into(),
+                value: 0.5,
+                note: format!(
+                    "{} outcome(s) admitted only when `{axiom}` is dropped from the source model",
+                    outcomes.len()
+                ),
+            });
             if bucket == Bucket::Consistent || bucket == Bucket::MappingStronger {
                 bucket = Bucket::KnownModelGap;
             }
         }
         if let Classification::NotComparable { reason } = &c.classification {
-            signals.push(Signal { name: "incomplete".into(), value: -0.5, note: reason.clone() });
+            signals.push(Signal {
+                name: "incomplete".into(),
+                value: -0.5,
+                note: reason.clone(),
+            });
             if bucket == Bucket::Consistent {
                 bucket = Bucket::Incomplete;
             }
         }
     }
-    // 3. Independence: number of distinct oracle layers that produced a set.
+    // 3. Independence: a single layer cannot establish cross-layer agreement.
     let n = b.layers.iter().filter(|l| l.outcomes.is_some()).count();
-    signals.push(Signal { name: "independent_layers".into(), value: 0.3 * n as f64, note: format!("{n} layers produced outcome sets") });
+    if n < 2 && bucket == Bucket::Consistent {
+        signals.push(Signal {
+            name: "incomplete".into(),
+            value: -0.5,
+            note: format!("only {n} layer(s) produced an outcome set"),
+        });
+        bucket = Bucket::Incomplete;
+    }
+    signals.push(Signal {
+        name: "independent_layers".into(),
+        value: 0.3 * n as f64,
+        note: format!("{n} layers produced outcome sets"),
+    });
     // 4. Compiler-pipeline ordering change (annotations differ between MIR and LLVM IR).
     for tp in &b.pipeline {
         if let Some((a, c)) = &tp.first_ordering_change {
-            signals.push(Signal { name: "pipeline_ordering_change".into(), value: 2.0, note: format!("{}: ordering annotations differ between {a} and {c}", tp.symbol) });
+            signals.push(Signal {
+                name: "pipeline_ordering_change".into(),
+                value: 2.0,
+                note: format!(
+                    "{}: ordering annotations differ between {a} and {c}",
+                    tp.symbol
+                ),
+            });
         }
     }
     // 5. Lift failure means the arch layer is missing: penalise slightly (unknown, not bad).
     if b.lift_error.is_some() {
-        signals.push(Signal { name: "lift_unsupported".into(), value: -0.5, note: "assembly could not be lifted; arch-model layer missing".into() });
+        signals.push(Signal {
+            name: "lift_unsupported".into(),
+            value: -0.5,
+            note: "assembly could not be lifted; arch-model layer missing".into(),
+        });
     }
     let total = signals.iter().map(|s| s.value).sum();
-    Score { total, signals, bucket }
+    Score {
+        total,
+        signals,
+        bucket,
+    }
 }
 
 #[cfg(test)]
@@ -119,7 +212,13 @@ mod tests {
     use crate::evidence::{Comparison, Localization};
 
     fn loc(adjacent: Vec<Comparison>) -> Localization {
-        Localization { chain: vec![], adjacent, against_hardware: vec![], earliest_divergence: None, summary: String::new() }
+        Localization {
+            chain: vec![],
+            adjacent,
+            against_hardware: vec![],
+            earliest_divergence: None,
+            summary: String::new(),
+        }
     }
 
     #[test]
@@ -129,7 +228,14 @@ mod tests {
             case_id: "t".into(),
             litmus: crate::families::Family::SB.instance_from_seed(1),
             litmus_digest: String::new(),
-            provenance: crate::evidence::Provenance { generator: "t".into(), generation_reason: "t".into(), seed: None, family: "SB".into(), parent_case: None, created_utc: String::new() },
+            provenance: crate::evidence::Provenance {
+                generator: "t".into(),
+                generation_reason: "t".into(),
+                seed: None,
+                family: "SB".into(),
+                parent_case: None,
+                created_utc: String::new(),
+            },
             rust_source: String::new(),
             rust_source_sha256: String::new(),
             c11_litmus: String::new(),
@@ -149,14 +255,38 @@ mod tests {
             redactions: vec![],
             replay: vec![],
         };
-        assert_eq!(score(&b).bucket, Bucket::Consistent);
-        b.localization = loc(vec![Comparison { a: Layer::SourceModel, b: Layer::ArchModel, classification: Classification::LaterLayerStronger { earlier: Layer::SourceModel, later: Layer::ArchModel, outcomes: vec![] } }]);
+        assert_eq!(score(&b).bucket, Bucket::Incomplete);
+        b.localization = loc(vec![Comparison {
+            a: Layer::SourceModel,
+            b: Layer::ArchModel,
+            classification: Classification::LaterLayerStronger {
+                earlier: Layer::SourceModel,
+                later: Layer::ArchModel,
+                outcomes: vec![],
+            },
+        }]);
         assert_eq!(score(&b).bucket, Bucket::MappingStronger);
-        b.localization = loc(vec![Comparison { a: Layer::SourceModel, b: Layer::ArchModel, classification: Classification::LaterLayerWeaker { earlier: Layer::SourceModel, later: Layer::ArchModel, outcomes: vec![crate::litmus::Outcome(vec![])] } }]);
+        b.localization = loc(vec![Comparison {
+            a: Layer::SourceModel,
+            b: Layer::ArchModel,
+            classification: Classification::LaterLayerWeaker {
+                earlier: Layer::SourceModel,
+                later: Layer::ArchModel,
+                outcomes: vec![crate::litmus::Outcome(vec![])],
+            },
+        }]);
         let s = score(&b);
         assert_eq!(s.bucket, Bucket::CandidateDefect);
         assert!(s.total > 5.0);
-        b.localization = loc(vec![Comparison { a: Layer::SourceModel, b: Layer::SourceEmulator, classification: Classification::ObservedOutsidePrediction { layer_pred: Layer::SourceModel, layer_obs: Layer::SourceEmulator, outcomes: vec![crate::litmus::Outcome(vec![])] } }]);
+        b.localization = loc(vec![Comparison {
+            a: Layer::SourceModel,
+            b: Layer::SourceEmulator,
+            classification: Classification::ObservedOutsidePrediction {
+                layer_pred: Layer::SourceModel,
+                layer_obs: Layer::SourceEmulator,
+                outcomes: vec![crate::litmus::Outcome(vec![])],
+            },
+        }]);
         assert_eq!(score(&b).bucket, Bucket::OracleDisagreement);
     }
 }

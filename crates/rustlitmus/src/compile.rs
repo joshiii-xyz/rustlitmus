@@ -34,7 +34,10 @@ pub struct ToolchainId {
 
 impl ToolchainId {
     pub fn is_nightly(&self) -> bool {
-        self.release.as_deref().is_some_and(|r| r.contains("nightly")) || self.name.starts_with("nightly")
+        self.release
+            .as_deref()
+            .is_some_and(|r| r.contains("nightly"))
+            || self.name.starts_with("nightly")
     }
 }
 
@@ -66,13 +69,31 @@ impl CompileConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
-    Load { loc: String, ord: String },
-    Store { loc: String, ord: String },
-    Rmw { loc: String, op: String, ord: String },
-    Cmpxchg { loc: String, success: String, failure: String },
-    Fence { ord: String },
+    Load {
+        loc: String,
+        ord: String,
+    },
+    Store {
+        loc: String,
+        ord: String,
+    },
+    Rmw {
+        loc: String,
+        op: String,
+        ord: String,
+    },
+    Cmpxchg {
+        loc: String,
+        success: String,
+        failure: String,
+    },
+    Fence {
+        ord: String,
+    },
     /// Architecture-level instruction with a memory effect, kept as text.
-    Asm { text: String },
+    Asm {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,12 +134,34 @@ pub fn rustc_path() -> PathBuf {
     crate::process::which("rustc").unwrap_or_else(|| PathBuf::from("rustc"))
 }
 
-pub fn toolchain_id(toolchain: &str) -> Result<ToolchainId, String> {
-    let out = run(&RunSpec::new(rustc_path(), [&format!("+{toolchain}"), "-vV"]).timeout(Duration::from_secs(60))).map_err(|e| e.to_string())?;
-    if out.exit_code != Some(0) {
-        return Err(format!("rustc +{toolchain} -vV failed: {}", out.stderr.trim()));
+fn absolute_path(path: &Path) -> Result<PathBuf, String> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
     }
-    let mut id = ToolchainId { name: toolchain.into(), rustc_version: String::new(), commit_hash: None, llvm_version: None, host: None, release: None };
+    let cwd = std::env::current_dir().map_err(|e| format!("read current directory: {e}"))?;
+    Ok(cwd.join(path))
+}
+
+pub fn toolchain_id(toolchain: &str) -> Result<ToolchainId, String> {
+    let out = run(
+        &RunSpec::new(rustc_path(), [&format!("+{toolchain}"), "-vV"])
+            .timeout(Duration::from_secs(60)),
+    )
+    .map_err(|e| e.to_string())?;
+    if out.exit_code != Some(0) {
+        return Err(format!(
+            "rustc +{toolchain} -vV failed: {}",
+            out.stderr.trim()
+        ));
+    }
+    let mut id = ToolchainId {
+        name: toolchain.into(),
+        rustc_version: String::new(),
+        commit_hash: None,
+        llvm_version: None,
+        host: None,
+        release: None,
+    };
     for (i, line) in out.stdout.lines().enumerate() {
         if i == 0 {
             id.rustc_version = line.trim().into();
@@ -174,10 +217,9 @@ pub fn extract_llvm_fn(ll: &str, symbol: &str) -> Option<String> {
 /// Extract the assembly of `symbol` (from its label to the `.Lfunc_end` / next global).
 pub fn extract_asm_fn(asm: &str, symbol: &str) -> Option<String> {
     let label = format!("{symbol}:");
-    let mut lines = asm.lines().peekable();
     let mut body = Vec::new();
     let mut inside = false;
-    while let Some(line) = lines.next() {
+    for line in asm.lines() {
         if !inside {
             if line.trim_end() == label {
                 inside = true;
@@ -196,7 +238,11 @@ pub fn extract_asm_fn(asm: &str, symbol: &str) -> Option<String> {
 fn ordering_from_mir(s: &str) -> Option<String> {
     for o in ["Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"] {
         if s.contains(&format!("Ordering::{o}")) {
-            return Some(o.to_lowercase().replace("acqrel", "acq_rel").replace("seqcst", "seq_cst"));
+            return Some(
+                o.to_lowercase()
+                    .replace("acqrel", "acq_rel")
+                    .replace("seqcst", "seq_cst"),
+            );
         }
     }
     None
@@ -214,15 +260,33 @@ pub fn events_from_mir_built(body: &str) -> LayerEvents {
         }
         let ord = ordering_from_mir(l).unwrap_or_else(|| "?".into());
         if l.contains("::store(") {
-            ev.events.push(Event::Store { loc: "?".into(), ord });
+            ev.events.push(Event::Store {
+                loc: "?".into(),
+                ord,
+            });
         } else if l.contains("::load(") {
-            ev.events.push(Event::Load { loc: "?".into(), ord });
+            ev.events.push(Event::Load {
+                loc: "?".into(),
+                ord,
+            });
         } else if l.contains("::swap(") {
-            ev.events.push(Event::Rmw { loc: "?".into(), op: "xchg".into(), ord });
+            ev.events.push(Event::Rmw {
+                loc: "?".into(),
+                op: "xchg".into(),
+                ord,
+            });
         } else if l.contains("::fetch_add(") {
-            ev.events.push(Event::Rmw { loc: "?".into(), op: "add".into(), ord });
+            ev.events.push(Event::Rmw {
+                loc: "?".into(),
+                op: "add".into(),
+                ord,
+            });
         } else if l.contains("::compare_exchange(") {
-            ev.events.push(Event::Cmpxchg { loc: "?".into(), success: ord, failure: "?".into() });
+            ev.events.push(Event::Cmpxchg {
+                loc: "?".into(),
+                success: ord,
+                failure: "?".into(),
+            });
         } else if l.contains("atomic::fence(") {
             ev.events.push(Event::Fence { ord });
         } else {
@@ -236,7 +300,11 @@ fn intrinsic_ordering(s: &str) -> Option<String> {
     // `AtomicOrdering::AcqRel` (intrinsic generic) or `Ordering::SeqCst` (const arg).
     for o in ["Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"] {
         if s.contains(&format!("AtomicOrdering::{o}")) || s.contains(&format!("Ordering::{o}")) {
-            return Some(o.to_lowercase().replace("acqrel", "acq_rel").replace("seqcst", "seq_cst"));
+            return Some(
+                o.to_lowercase()
+                    .replace("acqrel", "acq_rel")
+                    .replace("seqcst", "seq_cst"),
+            );
         }
     }
     None
@@ -250,7 +318,10 @@ fn mir_field_to_loc(body: &str, local: &str) -> Option<String> {
     let pat = format!("{local} = &raw");
     let line = body.lines().find(|l| l.contains(&pat))?;
     let idx = line.find("(*_1).")? + "(*_1).".len();
-    let digits: String = line[idx..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = line[idx..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     let field: usize = digits.parse().ok()?;
     Some(format!("loc{}", field / 2))
 }
@@ -260,7 +331,14 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
     for line in body.lines() {
         let l = line.trim();
-        let is_atomic = l.contains("atomic::atomic_") || l.contains("atomic_xadd") || l.contains("atomic_xchg") || l.contains("atomic_cxchg") || l.contains("atomic_compare_exchange") || l.contains("atomic_fence") || l.contains("atomic_store") || l.contains("atomic_load");
+        let is_atomic = l.contains("atomic::atomic_")
+            || l.contains("atomic_xadd")
+            || l.contains("atomic_xchg")
+            || l.contains("atomic_cxchg")
+            || l.contains("atomic_compare_exchange")
+            || l.contains("atomic_fence")
+            || l.contains("atomic_store")
+            || l.contains("atomic_load");
         if !is_atomic || !l.contains("-> [") {
             continue;
         }
@@ -268,7 +346,10 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
         let ptr_local = l.find('(').and_then(|i| {
             let args = &l[i + 1..];
             let a = args.trim_start_matches("move ").trim_start_matches("copy ");
-            let name: String = a.chars().take_while(|c| *c == '_' || c.is_ascii_digit()).collect();
+            let name: String = a
+                .chars()
+                .take_while(|c| *c == '_' || c.is_ascii_digit())
+                .collect();
             (!name.is_empty()).then_some(name)
         });
         let loc = ptr_local
@@ -278,7 +359,10 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
                 let cast = format!("{p} = copy ");
                 let src = body.lines().find(|x| x.contains(&cast)).and_then(|x| {
                     let s = x.find("copy ")? + 5;
-                    let name: String = x[s..].chars().take_while(|c| *c == '_' || c.is_ascii_digit()).collect();
+                    let name: String = x[s..]
+                        .chars()
+                        .take_while(|c| *c == '_' || c.is_ascii_digit())
+                        .collect();
                     Some(name)
                 });
                 mir_field_to_loc(body, src.as_deref().unwrap_or(p))
@@ -290,9 +374,17 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
         } else if l.contains("atomic_load") {
             ev.events.push(Event::Load { loc, ord });
         } else if l.contains("atomic_xadd") {
-            ev.events.push(Event::Rmw { loc, op: "add".into(), ord });
+            ev.events.push(Event::Rmw {
+                loc,
+                op: "add".into(),
+                ord,
+            });
         } else if l.contains("atomic_xchg") {
-            ev.events.push(Event::Rmw { loc, op: "xchg".into(), ord });
+            ev.events.push(Event::Rmw {
+                loc,
+                op: "xchg".into(),
+                ord,
+            });
         } else if l.contains("atomic_cxchg") || l.contains("atomic_compare_exchange") {
             // Intrinsic form: orderings as generics `AtomicOrdering::X, AtomicOrdering::Y`.
             // Library-wrapper form (`atomic_compare_exchange::<u32>(ptr, old, new, Ordering::S, Ordering::F)`):
@@ -302,8 +394,15 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
                 let mut rest = l;
                 while let Some(i) = rest.find(marker) {
                     let s = &rest[i + marker.len()..];
-                    let name: String = s.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-                    ords.push(name.to_lowercase().replace("acqrel", "acq_rel").replace("seqcst", "seq_cst"));
+                    let name: String = s
+                        .chars()
+                        .take_while(|c| c.is_ascii_alphanumeric())
+                        .collect();
+                    ords.push(
+                        name.to_lowercase()
+                            .replace("acqrel", "acq_rel")
+                            .replace("seqcst", "seq_cst"),
+                    );
                     rest = &s[name.len()..];
                 }
                 if !ords.is_empty() {
@@ -312,7 +411,11 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
             }
             let success = ords.first().cloned().unwrap_or_else(|| "?".into());
             let failure = ords.get(1).cloned().unwrap_or_else(|| "?".into());
-            ev.events.push(Event::Cmpxchg { loc, success, failure });
+            ev.events.push(Event::Cmpxchg {
+                loc,
+                success,
+                failure,
+            });
         } else if l.contains("atomic_fence") {
             ev.events.push(Event::Fence { ord });
         } else {
@@ -331,7 +434,10 @@ fn llvm_ptr_to_loc(body: &str, ptr: &str) -> String {
     let def = format!("{ptr} = getelementptr");
     if let Some(line) = body.lines().find(|l| l.trim_start().starts_with(&def)) {
         if let Some(i) = line.rfind("i64 ") {
-            let digits: String = line[i + 4..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let digits: String = line[i + 4..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
             if let Ok(n) = digits.parse::<usize>() {
                 return format!("loc{}", n / 64);
             }
@@ -357,27 +463,60 @@ pub fn events_from_llvm(body: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
     for line in body.lines() {
         let l = line.trim();
-        let toks: Vec<&str> = l.split_whitespace().map(|t| t.trim_end_matches(',')).collect();
+        let toks: Vec<&str> = l
+            .split_whitespace()
+            .map(|t| t.trim_end_matches(','))
+            .collect();
         if l.contains("load atomic") {
             // %0 = load atomic i32, ptr %locs seq_cst, align 4
-            let ptr = toks.iter().position(|t| *t == "ptr").and_then(|i| toks.get(i + 1)).copied().unwrap_or("?");
+            let ptr = toks
+                .iter()
+                .position(|t| *t == "ptr")
+                .and_then(|i| toks.get(i + 1))
+                .copied()
+                .unwrap_or("?");
             let ord = toks.iter().find_map(|t| llvm_order(t)).unwrap_or("?");
-            ev.events.push(Event::Load { loc: llvm_ptr_to_loc(body, ptr), ord: ord.into() });
+            ev.events.push(Event::Load {
+                loc: llvm_ptr_to_loc(body, ptr),
+                ord: ord.into(),
+            });
         } else if l.starts_with("store atomic") {
             // store atomic i32 1, ptr %_7 seq_cst, align 4
-            let ptr = toks.iter().position(|t| *t == "ptr").and_then(|i| toks.get(i + 1)).copied().unwrap_or("?");
+            let ptr = toks
+                .iter()
+                .position(|t| *t == "ptr")
+                .and_then(|i| toks.get(i + 1))
+                .copied()
+                .unwrap_or("?");
             let ord = toks.iter().find_map(|t| llvm_order(t)).unwrap_or("?");
-            ev.events.push(Event::Store { loc: llvm_ptr_to_loc(body, ptr), ord: ord.into() });
+            ev.events.push(Event::Store {
+                loc: llvm_ptr_to_loc(body, ptr),
+                ord: ord.into(),
+            });
         } else if l.contains("atomicrmw") {
             // %_4 = atomicrmw add ptr %_7, i32 1 acq_rel, align 4
             let i = toks.iter().position(|t| *t == "atomicrmw").unwrap_or(0);
             let op = toks.get(i + 1).copied().unwrap_or("?");
-            let ptr = toks.iter().position(|t| *t == "ptr").and_then(|i| toks.get(i + 1)).copied().unwrap_or("?");
+            let ptr = toks
+                .iter()
+                .position(|t| *t == "ptr")
+                .and_then(|i| toks.get(i + 1))
+                .copied()
+                .unwrap_or("?");
             let ord = toks.iter().find_map(|t| llvm_order(t)).unwrap_or("?");
-            ev.events.push(Event::Rmw { loc: llvm_ptr_to_loc(body, ptr), op: op.into(), ord: ord.into() });
+            ev.events.push(Event::Rmw {
+                loc: llvm_ptr_to_loc(body, ptr),
+                op: op.into(),
+                ord: ord.into(),
+            });
         } else if l.contains("cmpxchg") {
             // %0 = cmpxchg [weak] ptr %a, i32 0, i32 1 release acquire, align 4
-            let ptr = toks.iter().position(|t| *t == "ptr").and_then(|i| toks.get(i + 1)).copied().unwrap_or("?");
+            let ptr = toks
+                .iter()
+                .position(|t| *t == "ptr")
+                .and_then(|i| toks.get(i + 1))
+                .copied()
+                .unwrap_or("?");
             let ords: Vec<&str> = toks.iter().filter_map(|t| llvm_order(t)).collect();
             ev.events.push(Event::Cmpxchg {
                 loc: llvm_ptr_to_loc(body, ptr),
@@ -386,8 +525,14 @@ pub fn events_from_llvm(body: &str) -> LayerEvents {
             });
         } else if l.starts_with("fence") {
             let ord = toks.iter().find_map(|t| llvm_order(t)).unwrap_or("?");
-            let scope = if l.contains("syncscope") { "singlethread " } else { "" };
-            ev.events.push(Event::Fence { ord: format!("{scope}{ord}") });
+            let scope = if l.contains("syncscope") {
+                "singlethread "
+            } else {
+                ""
+            };
+            ev.events.push(Event::Fence {
+                ord: format!("{scope}{ord}"),
+            });
         } else if l.contains("atomic") && !l.starts_with(';') {
             ev.unparsed.push(l.to_string());
         }
@@ -401,26 +546,63 @@ pub fn events_from_asm(body: &str, target: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
     for line in body.lines().skip(1) {
         let l = line.trim();
-        if l.is_empty() || l.starts_with('.') || l.starts_with('#') || l.starts_with("//") || l.ends_with(':') {
+        if l.is_empty()
+            || l.starts_with('.')
+            || l.starts_with('#')
+            || l.starts_with("//")
+            || l.ends_with(':')
+        {
             continue;
         }
         let lower = l.to_lowercase();
         let mnemonic = lower.split_whitespace().next().unwrap_or("");
         let mem_effect = if target.starts_with("aarch64") {
-            l.contains('[') || mnemonic.starts_with("dmb") || mnemonic.starts_with("dsb") || mnemonic.starts_with("isb") || mnemonic.starts_with("bl") || mnemonic.starts_with("cas") || mnemonic.starts_with("swp") || mnemonic.starts_with("ld") || mnemonic.starts_with("st")
+            l.contains('[')
+                || mnemonic.starts_with("dmb")
+                || mnemonic.starts_with("dsb")
+                || mnemonic.starts_with("isb")
+                || mnemonic.starts_with("bl")
+                || mnemonic.starts_with("cas")
+                || mnemonic.starts_with("swp")
+                || mnemonic.starts_with("ld")
+                || mnemonic.starts_with("st")
         } else {
-            l.contains('(') || mnemonic.starts_with("lock") || mnemonic.contains("fence") || mnemonic.starts_with("xchg") || mnemonic.starts_with("call") || mnemonic.starts_with("cmpxchg")
+            l.contains('(')
+                || mnemonic.starts_with("lock")
+                || mnemonic.contains("fence")
+                || mnemonic.starts_with("xchg")
+                || mnemonic.starts_with("call")
+                || mnemonic.starts_with("cmpxchg")
         };
-        if mem_effect || mnemonic.starts_with("ret") || mnemonic.starts_with('b') || mnemonic.starts_with('j') || mnemonic.starts_with("cb") || mnemonic.starts_with("tb") {
-            ev.events.push(Event::Asm { text: lower.split_whitespace().collect::<Vec<_>>().join(" ") });
+        if mem_effect
+            || mnemonic.starts_with("ret")
+            || mnemonic.starts_with('b')
+            || mnemonic.starts_with('j')
+            || mnemonic.starts_with("cb")
+            || mnemonic.starts_with("tb")
+        {
+            ev.events.push(Event::Asm {
+                text: lower.split_whitespace().collect::<Vec<_>>().join(" "),
+            });
         }
     }
     ev
 }
 
 /// Compile `source` under `cfg`, writing artifacts into `out_dir`.
-pub fn compile(source_path: &Path, out_dir: &Path, cfg: &CompileConfig, thread_symbols: &[String], timeout: Duration) -> Result<CompileResult, String> {
-    std::fs::create_dir_all(out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
+pub fn compile(
+    source_path: &Path,
+    out_dir: &Path,
+    cfg: &CompileConfig,
+    thread_symbols: &[String],
+    timeout: Duration,
+) -> Result<CompileResult, String> {
+    // `rustc` runs with `out_dir` as its working directory so its incidental files stay
+    // together. Make input and output paths absolute before constructing its command:
+    // otherwise a caller using relative paths makes rustc look for `out_dir/source_path`.
+    let source_path = absolute_path(source_path)?;
+    let out_dir = absolute_path(out_dir)?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
     let tc = toolchain_id(&cfg.toolchain)?;
     let nightly = tc.is_nightly();
     let mir_dir = out_dir.join("mir-dumps");
@@ -444,12 +626,20 @@ pub fn compile(source_path: &Path, out_dir: &Path, cfg: &CompileConfig, thread_s
         args.push(format!("-Zdump-mir-dir={}", mir_dir.display()));
     }
     args.extend(cfg.extra_flags.iter().cloned());
-    let spec = RunSpec::new(rustc_path(), args.iter().map(String::as_str)).timeout(timeout).cwd(out_dir);
+    let spec = RunSpec::new(rustc_path(), args.iter().map(String::as_str))
+        .timeout(timeout)
+        .cwd(out_dir);
     let command = spec.command_line();
     let out = run(&spec).map_err(|e| e.to_string())?;
     let mut unavailable = BTreeMap::new();
     if !nightly {
-        unavailable.insert("mir_built".into(), format!("toolchain {} is not nightly; -Zdump-mir unavailable", cfg.toolchain));
+        unavailable.insert(
+            "mir_built".into(),
+            format!(
+                "toolchain {} is not nightly; -Zdump-mir unavailable",
+                cfg.toolchain
+            ),
+        );
     }
     let read = |p: PathBuf| std::fs::read_to_string(&p).ok();
     let ll = read(out_base.with_extension("ll"));
@@ -465,19 +655,25 @@ pub fn compile(source_path: &Path, out_dir: &Path, cfg: &CompileConfig, thread_s
         unavailable.insert("mir_optimized".into(), "rustc did not produce .mir".into());
     }
     let binary = out_base.exists().then(|| out_base.clone());
-    let binary_sha256 = binary.as_ref().and_then(|b| std::fs::read(b).ok()).map(|bytes| {
-        use sha2::{Digest, Sha256};
-        hex::encode(Sha256::digest(bytes))
-    });
+    let binary_sha256 = binary
+        .as_ref()
+        .and_then(|b| std::fs::read(b).ok())
+        .map(|bytes| {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(bytes))
+        });
     let mut threads = Vec::new();
     for sym in thread_symbols {
         let mir_built = if nightly {
-            std::fs::read_dir(&mir_dir).ok().and_then(|rd| {
-                rd.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
-                    let n = p.file_name().unwrap().to_string_lossy().into_owned();
-                    n.contains(&format!(".{sym}.")) && n.ends_with("built.after.mir")
+            std::fs::read_dir(&mir_dir)
+                .ok()
+                .and_then(|rd| {
+                    rd.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                        let n = p.file_name().unwrap().to_string_lossy().into_owned();
+                        n.contains(&format!(".{sym}.")) && n.ends_with("built.after.mir")
+                    })
                 })
-            }).and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|p| std::fs::read_to_string(p).ok())
         } else {
             None
         };
@@ -496,7 +692,17 @@ pub fn compile(source_path: &Path, out_dir: &Path, cfg: &CompileConfig, thread_s
             asm: asm_fn,
         });
     }
-    Ok(CompileResult { config: cfg.clone(), toolchain: tc, command, exit_code: out.exit_code, stderr: out.stderr, binary, binary_sha256, threads, unavailable })
+    Ok(CompileResult {
+        config: cfg.clone(),
+        toolchain: tc,
+        command,
+        exit_code: out.exit_code,
+        stderr: out.stderr,
+        binary,
+        binary_sha256,
+        threads,
+        unavailable,
+    })
 }
 
 #[cfg(test)]
@@ -534,12 +740,30 @@ define void @other() {
         assert_eq!(
             ev.events,
             vec![
-                Event::Store { loc: "loc1".into(), ord: "seq_cst".into() },
-                Event::Load { loc: "loc0".into(), ord: "seq_cst".into() },
-                Event::Rmw { loc: "loc1".into(), op: "add".into(), ord: "acq_rel".into() },
-                Event::Cmpxchg { loc: "loc0".into(), success: "release".into(), failure: "acquire".into() },
-                Event::Fence { ord: "seq_cst".into() },
-                Event::Fence { ord: "singlethread release".into() },
+                Event::Store {
+                    loc: "loc1".into(),
+                    ord: "seq_cst".into()
+                },
+                Event::Load {
+                    loc: "loc0".into(),
+                    ord: "seq_cst".into()
+                },
+                Event::Rmw {
+                    loc: "loc1".into(),
+                    op: "add".into(),
+                    ord: "acq_rel".into()
+                },
+                Event::Cmpxchg {
+                    loc: "loc0".into(),
+                    success: "release".into(),
+                    failure: "acquire".into()
+                },
+                Event::Fence {
+                    ord: "seq_cst".into()
+                },
+                Event::Fence {
+                    ord: "singlethread release".into()
+                },
             ]
         );
         assert!(ev.unparsed.is_empty(), "{:?}", ev.unparsed);
@@ -576,9 +800,19 @@ fn main() -> () {
         assert_eq!(
             ev.events,
             vec![
-                Event::Store { loc: "loc1".into(), ord: "seq_cst".into() },
-                Event::Load { loc: "loc0".into(), ord: "seq_cst".into() },
-                Event::Rmw { loc: "loc1".into(), op: "add".into(), ord: "acq_rel".into() },
+                Event::Store {
+                    loc: "loc1".into(),
+                    ord: "seq_cst".into()
+                },
+                Event::Load {
+                    loc: "loc0".into(),
+                    ord: "seq_cst".into()
+                },
+                Event::Rmw {
+                    loc: "loc1".into(),
+                    op: "add".into(),
+                    ord: "acq_rel".into()
+                },
             ]
         );
     }
@@ -590,8 +824,24 @@ fn main() -> () {
         let f = extract_asm_fn(ASM, "rl_thread_1").unwrap();
         assert!(!f.contains("other:"));
         let ev = events_from_asm(&f, "x86_64-unknown-linux-gnu");
-        let texts: Vec<&str> = ev.events.iter().map(|e| match e { Event::Asm { text } => text.as_str(), _ => "" }).collect();
-        assert_eq!(texts, vec!["xchgl %eax, 64(%rdi)", "movl (%rdi), %ecx", "movl %ecx, (%rsi)", "lock xaddl %eax, 64(%rdi)", "retq"]);
+        let texts: Vec<&str> = ev
+            .events
+            .iter()
+            .map(|e| match e {
+                Event::Asm { text } => text.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                "xchgl %eax, 64(%rdi)",
+                "movl (%rdi), %ecx",
+                "movl %ecx, (%rsi)",
+                "lock xaddl %eax, 64(%rdi)",
+                "retq"
+            ]
+        );
     }
 
     #[test]
@@ -607,7 +857,14 @@ fn rl_thread_1(_1: &Locs, _2: &mut [u32; 2]) -> () {
 "#;
         let f = extract_mir_fn(mir, "rl_thread_1").unwrap();
         let ev = events_from_mir_optimized(&f);
-        assert_eq!(ev.events, vec![Event::Cmpxchg { loc: "loc1".into(), success: "relaxed".into(), failure: "acquire".into() }]);
+        assert_eq!(
+            ev.events,
+            vec![Event::Cmpxchg {
+                loc: "loc1".into(),
+                success: "relaxed".into(),
+                failure: "acquire".into()
+            }]
+        );
     }
 
     #[test]
@@ -619,8 +876,38 @@ fn rl_thread_1(_1: &Locs, _2: &mut [u32; 2]) -> () {
 
     #[test]
     fn config_label_is_filesystem_safe() {
-        let c = CompileConfig { toolchain: "nightly".into(), target: "aarch64-unknown-linux-gnu".into(), opt_level: "3".into(), extra_flags: vec!["-Ctarget-feature=+lse,+rcpc".into()] };
+        let c = CompileConfig {
+            toolchain: "nightly".into(),
+            target: "aarch64-unknown-linux-gnu".into(),
+            opt_level: "3".into(),
+            extra_flags: vec!["-Ctarget-feature=+lse,+rcpc".into()],
+        };
         let l = c.label();
         assert!(!l.contains('=') && !l.contains(',') && !l.contains('/'));
+    }
+
+    #[test]
+    fn compiles_relative_paths() {
+        let root = tempfile::Builder::new()
+            .prefix("rustlitmus-compile-")
+            .tempdir_in(".")
+            .unwrap();
+        let source = root.path().join("case.rs");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        let out = root.path().join("build");
+        let cwd = std::env::current_dir().unwrap();
+        let source = source.strip_prefix(&cwd).unwrap();
+        let out = out.strip_prefix(&cwd).unwrap();
+        let target = toolchain_id("stable").unwrap().host.unwrap();
+        let cfg = CompileConfig {
+            toolchain: "stable".into(),
+            target,
+            opt_level: "0".into(),
+            extra_flags: Vec::new(),
+        };
+
+        let result = compile(source, out, &cfg, &[], Duration::from_secs(60)).unwrap();
+        assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
+        assert!(result.binary.is_some_and(|path| path.is_file()));
     }
 }

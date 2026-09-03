@@ -36,18 +36,32 @@ pub fn herd_version(herd: &Path) -> String {
 /// with register counts taken from `litmus`. Registers absent in the line (herd omits
 /// nothing when `locations` lists them, but be defensive) are an error.
 pub fn parse_state_line(line: &str, litmus: &Litmus) -> Result<Outcome, String> {
-    let mut regs: Vec<Vec<Option<u32>>> = litmus.threads.iter().map(|t| vec![None; t.num_regs()]).collect();
+    let mut regs: Vec<Vec<Option<u32>>> = litmus
+        .threads
+        .iter()
+        .map(|t| vec![None; t.num_regs()])
+        .collect();
     for item in line.split(';') {
         let item = item.trim();
         if item.is_empty() {
             continue;
         }
-        let (lhs, rhs) = item.split_once('=').ok_or_else(|| format!("bad state item {item:?}"))?;
-        let (t, r) = lhs.split_once(":r").ok_or_else(|| format!("bad register {lhs:?}"))?;
+        let (lhs, rhs) = item
+            .split_once('=')
+            .ok_or_else(|| format!("bad state item {item:?}"))?;
+        let (t, r) = lhs
+            .split_once(":r")
+            .ok_or_else(|| format!("bad register {lhs:?}"))?;
         let t: usize = t.parse().map_err(|_| format!("bad thread in {lhs:?}"))?;
         let r: usize = r.parse().map_err(|_| format!("bad register in {lhs:?}"))?;
-        let v: u32 = rhs.trim().parse().map_err(|_| format!("bad value in {item:?}"))?;
-        let slot = regs.get_mut(t).and_then(|rs| rs.get_mut(r)).ok_or_else(|| format!("{lhs} out of range"))?;
+        let v: u32 = rhs
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad value in {item:?}"))?;
+        let slot = regs
+            .get_mut(t)
+            .and_then(|rs| rs.get_mut(r))
+            .ok_or_else(|| format!("{lhs} out of range"))?;
         *slot = Some(v);
     }
     let mut out = Vec::new();
@@ -65,10 +79,18 @@ pub fn parse_state_line(line: &str, litmus: &Litmus) -> Result<Outcome, String> 
 /// only (used when the caller decodes with its own register map).
 pub type Decoder<'a> = &'a dyn Fn(&str) -> Result<Outcome, String>;
 
-pub fn parse_output(stdout: &str, stderr: &str, decode: Option<Decoder<'_>>) -> (Vec<String>, Result<OutcomeSet, String>, Vec<String>, bool) {
+pub fn parse_output(
+    stdout: &str,
+    stderr: &str,
+    decode: Option<Decoder<'_>>,
+) -> (Vec<String>, Result<OutcomeSet, String>, Vec<String>, bool) {
     let mut raw = Vec::new();
     let mut outcomes = BTreeMap::new();
-    let mut warnings: Vec<String> = stderr.lines().filter(|l| l.contains("Warning") || l.contains("error")).map(String::from).collect();
+    let mut warnings: Vec<String> = stderr
+        .lines()
+        .filter(|l| l.contains("Warning") || l.contains("error"))
+        .map(String::from)
+        .collect();
     let mut in_states = false;
     let mut states_declared: Option<usize> = None;
     let mut undefined = false;
@@ -99,24 +121,45 @@ pub fn parse_output(stdout: &str, stderr: &str, decode: Option<Decoder<'_>>) -> 
         }
     }
     let parsed = match states_declared {
-        None => Err(format!("herd output contained no `States` section; stderr: {}", stderr.trim())),
-        Some(n) if n != raw.len() => Err(format!("herd declared {n} states but printed {}", raw.len())),
-        Some(_) if decode.is_some() && outcomes.values().sum::<u64>() != raw.len() as u64 => Err("some herd states could not be decoded".into()),
+        None => Err(format!(
+            "herd output contained no `States` section; stderr: {}",
+            stderr.trim()
+        )),
+        Some(n) if n != raw.len() => Err(format!(
+            "herd declared {n} states but printed {}",
+            raw.len()
+        )),
+        Some(_) if decode.is_some() && outcomes.values().sum::<u64>() != raw.len() as u64 => {
+            Err("some herd states could not be decoded".into())
+        }
         Some(_) if decode.is_none() => Err("no decoder supplied for herd states".into()),
         Some(_) => Ok(OutcomeSet::from_counts(&outcomes, true)),
     };
     (raw, parsed, warnings, undefined)
 }
 
-pub fn run_herd(herd: &Path, model: &str, litmus_file: &Path, decode: Option<Decoder<'_>>, timeout: Duration) -> HerdResult {
-    let args: Vec<String> = vec!["-model".into(), model.into(), "-show".into(), "none".into(), litmus_file.display().to_string()];
+pub fn run_herd(
+    herd: &Path,
+    model: &str,
+    litmus_file: &Path,
+    decode: Option<Decoder<'_>>,
+    timeout: Duration,
+) -> HerdResult {
+    let args: Vec<String> = vec![
+        "-model".into(),
+        model.into(),
+        "-show".into(),
+        "none".into(),
+        litmus_file.display().to_string(),
+    ];
     let spec = RunSpec::new(herd, args.iter().map(String::as_str)).timeout(timeout);
     let mut command = vec![herd.display().to_string()];
     command.extend(args.iter().cloned());
     let version = herd_version(herd);
     match run(&spec) {
         Ok(o) => {
-            let (raw_states, parsed, warnings, undefined) = parse_output(&o.stdout, &o.stderr, decode);
+            let (raw_states, parsed, warnings, undefined) =
+                parse_output(&o.stdout, &o.stderr, decode);
             let (outcomes, warnings) = match parsed {
                 Ok(set) => (Some(set), warnings),
                 Err(e) => {
@@ -125,7 +168,19 @@ pub fn run_herd(herd: &Path, model: &str, litmus_file: &Path, decode: Option<Dec
                     (None, w)
                 }
             };
-            HerdResult { tool: "herd7".into(), version, model: model.into(), command, exit_code: o.exit_code, stdout: o.stdout, stderr: o.stderr, raw_states, outcomes, warnings, undefined }
+            HerdResult {
+                tool: "herd7".into(),
+                version,
+                model: model.into(),
+                command,
+                exit_code: o.exit_code,
+                stdout: o.stdout,
+                stderr: o.stderr,
+                raw_states,
+                outcomes,
+                warnings,
+                undefined,
+            }
         }
         Err(e) => HerdResult {
             tool: "herd7".into(),
@@ -155,14 +210,30 @@ mod tests {
             threads: vec![
                 Thread {
                     instrs: vec![
-                        Instr::Store { loc: 0, value: 1, ord: Ord::Relaxed },
-                        Instr::Store { loc: 1, value: 1, ord: Ord::Release },
+                        Instr::Store {
+                            loc: 0,
+                            value: 1,
+                            ord: Ord::Relaxed,
+                        },
+                        Instr::Store {
+                            loc: 1,
+                            value: 1,
+                            ord: Ord::Release,
+                        },
                     ],
                 },
                 Thread {
                     instrs: vec![
-                        Instr::Load { loc: 1, reg: 0, ord: Ord::Acquire },
-                        Instr::Load { loc: 0, reg: 1, ord: Ord::Relaxed },
+                        Instr::Load {
+                            loc: 1,
+                            reg: 0,
+                            ord: Ord::Acquire,
+                        },
+                        Instr::Load {
+                            loc: 0,
+                            reg: 1,
+                            ord: Ord::Relaxed,
+                        },
                     ],
                 },
             ],

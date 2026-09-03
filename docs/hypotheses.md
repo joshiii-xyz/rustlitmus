@@ -181,4 +181,3 @@ outcome). Both are the expected results.
 3. This is a **control**, not a discovery: P0982 is a 2018 committee paper. Its value here
    is that the system localised a source-model/source-emulator disagreement to a specific
    definition (`rs`) with a one-line model patch as the falsification experiment.
-

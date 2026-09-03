@@ -1,7 +1,10 @@
 //! End-to-end pipeline for one case under one configuration, producing a [`Bundle`].
 
 use crate::compile::{compile, CompileConfig};
-use crate::evidence::{redact, sha256_hex, thread_pipeline, Bundle, Layer, LayerOutcome, Provenance, Status, SCHEMA_VERSION};
+use crate::evidence::{
+    redact, sha256_hex, thread_pipeline, Bundle, Layer, LayerOutcome, Provenance, Status,
+    SCHEMA_VERSION,
+};
 use crate::hardware::run_binary;
 use crate::herd::run_herd;
 use crate::lift::lift;
@@ -62,8 +65,24 @@ pub struct Stages {
 
 impl Stages {
     pub fn all() -> Self {
-        Stages { herd_source: true, compile: true, herd_arch: true, miri_weak: true, miri_genmc: true, hardware: true }
+        Stages {
+            herd_source: true,
+            compile: true,
+            herd_arch: true,
+            miri_weak: true,
+            miri_genmc: true,
+            hardware: true,
+        }
     }
+}
+
+/// Inputs that stay constant while one case moves through the pipeline.
+pub struct RunContext<'a> {
+    pub cfg: &'a CompileConfig,
+    pub tools: &'a Tools,
+    pub budget: &'a Budget,
+    pub stages: &'a Stages,
+    pub source_model: &'a str,
 }
 
 /// Architecture `.cat` model for a target.
@@ -87,7 +106,17 @@ pub fn weakened_model_for(source_model: &str) -> Option<String> {
     candidate.is_file().then(|| candidate.display().to_string())
 }
 
-pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Budget, stages: &Stages, work: &Path, provenance: Provenance, source_model: &str) -> Result<Bundle, String> {
+pub fn run_case(
+    litmus: &Litmus,
+    context: RunContext<'_>,
+    work: &Path,
+    provenance: Provenance,
+) -> Result<Bundle, String> {
+    let cfg = context.cfg;
+    let tools = context.tools;
+    let budget = context.budget;
+    let stages = context.stages;
+    let source_model = context.source_model;
     litmus.validate()?;
     std::fs::create_dir_all(work).map_err(|e| format!("create {}: {e}", work.display()))?;
     let rendered = render_rust::render(litmus);
@@ -111,7 +140,11 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
                 replay.push(r.command.join(" "));
                 layers.push(LayerOutcome {
                     layer: Layer::SourceModel,
-                    status: if r.outcomes.is_some() { Status::Predicted } else { Status::Unsupported },
+                    status: if r.outcomes.is_some() {
+                        Status::Predicted
+                    } else {
+                        Status::Unsupported
+                    },
                     outcomes: r.outcomes.clone(),
                     tool: format!("{} {} model={}", r.tool, r.version, r.model),
                     notes: r.warnings.clone(),
@@ -126,9 +159,8 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
     } else {
         None
     };
-    // Weakened source model (no-thin-air axiom dropped), used only to *explain* divergences:
-    // if the compiled program admits outcomes the primary model forbids but this variant
-    // admits, the cause is the model's OOTA prohibition, not the compiler.
+    // A nonstandard source-model variant with the no-thin-air axiom dropped. It is kept as
+    // diagnostic context only and never changes the localization classification.
     let herd_source_weak = match (&herd_source, &tools.herd, weakened_model_for(source_model)) {
         (Some(_), Some(h), Some(weak_model)) => {
             let dec = |l: &str| crate::herd::parse_state_line(l, litmus);
@@ -143,13 +175,24 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
     let miri_weak = if stages.miri_weak {
         match &tools.miri {
             Some(m) => {
-                let r = run_weak_memory(m, &src_path, &work.join("miri"), &budget.miri_seeds, budget.miri_iters, budget.miri_timeout);
+                let r = run_weak_memory(
+                    m,
+                    &src_path,
+                    &work.join("miri"),
+                    &budget.miri_seeds,
+                    budget.miri_iters,
+                    budget.miri_timeout,
+                );
                 if let Some(first) = r.runs.first() {
                     replay.push(first.command.join(" "));
                 }
                 layers.push(LayerOutcome {
                     layer: Layer::SourceEmulator,
-                    status: if r.outcomes.is_some() { Status::Observed } else { Status::Unsupported },
+                    status: if r.outcomes.is_some() {
+                        Status::Observed
+                    } else {
+                        Status::Unsupported
+                    },
                     outcomes: r.outcomes.clone(),
                     tool: format!("{} {} ({})", r.tool, r.version, r.mode),
                     notes: r.warnings.clone(),
@@ -178,15 +221,29 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
                 }
                 layers.push(LayerOutcome {
                     layer: Layer::SourceModelChecker,
-                    status: if r.outcomes.is_some() { Status::Predicted } else { Status::Unsupported },
+                    status: if r.outcomes.is_some() {
+                        Status::Predicted
+                    } else {
+                        Status::Unsupported
+                    },
                     outcomes: r.outcomes.clone(),
-                    tool: format!("{} {} ({}, {} executions)", r.tool, r.version, r.mode, r.explored_executions.map(|n| n.to_string()).unwrap_or_else(|| "?".into())),
+                    tool: format!(
+                        "{} {} ({}, {} executions)",
+                        r.tool,
+                        r.version,
+                        r.mode,
+                        r.explored_executions
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "?".into())
+                    ),
                     notes: r.warnings.clone(),
                 });
                 Some(r)
             }
             None => {
-                limitations.push("Miri-GenMC not available (requires a Miri built with --features=genmc)".into());
+                limitations.push(
+                    "Miri-GenMC not available (requires a Miri built with --features=genmc)".into(),
+                );
                 None
             }
         }
@@ -196,14 +253,23 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
 
     // Compile + capture.
     let compile_res = if stages.compile || stages.herd_arch || stages.hardware {
-        match compile(&src_path, &work.join("build"), cfg, &rendered.thread_symbols, budget.compile_timeout) {
+        match compile(
+            &src_path,
+            &work.join("build"),
+            cfg,
+            &rendered.thread_symbols,
+            budget.compile_timeout,
+        ) {
             Ok(mut c) => {
                 let (s, r) = redact(&c.stderr);
                 c.stderr = s;
                 redactions.extend(r);
                 replay.push(c.command.join(" "));
                 if c.exit_code != Some(0) {
-                    limitations.push(format!("compilation failed (exit {:?}); see compile.stderr", c.exit_code));
+                    limitations.push(format!(
+                        "compilation failed (exit {:?}); see compile.stderr",
+                        c.exit_code
+                    ));
                 }
                 Some(c)
             }
@@ -215,7 +281,10 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
     } else {
         None
     };
-    let pipeline: Vec<_> = compile_res.as_ref().map(|c| c.threads.iter().map(thread_pipeline).collect()).unwrap_or_default();
+    let pipeline: Vec<_> = compile_res
+        .as_ref()
+        .map(|c| c.threads.iter().map(thread_pipeline).collect())
+        .unwrap_or_default();
 
     // Layer: architecture model on lifted assembly.
     let (lifted, lift_error, herd_arch) = if stages.herd_arch {
@@ -231,16 +300,32 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
                         replay.push(r.command.join(" "));
                         layers.push(LayerOutcome {
                             layer: Layer::ArchModel,
-                            status: if r.outcomes.is_some() { Status::Predicted } else { Status::Unsupported },
+                            status: if r.outcomes.is_some() {
+                                Status::Predicted
+                            } else {
+                                Status::Unsupported
+                            },
                             outcomes: r.outcomes.clone(),
-                            tool: format!("{} {} model={} (lifted from {} asm)", r.tool, r.version, r.model, cfg.label()),
+                            tool: format!(
+                                "{} {} model={} (lifted from {} asm)",
+                                r.tool,
+                                r.version,
+                                r.model,
+                                cfg.label()
+                            ),
                             notes: r.warnings.clone(),
                         });
                         (Some(l), None, Some(r))
                     }
                     Err(e) => {
                         limitations.push(format!("assembly lifting unsupported: {e}"));
-                        layers.push(LayerOutcome { layer: Layer::ArchModel, status: Status::Unsupported, outcomes: None, tool: "lifter".into(), notes: vec![e.to_string()] });
+                        layers.push(LayerOutcome {
+                            layer: Layer::ArchModel,
+                            status: Status::Unsupported,
+                            outcomes: None,
+                            tool: "lifter".into(),
+                            notes: vec![e.to_string()],
+                        });
                         (None, Some(e), None)
                     }
                 }
@@ -263,23 +348,57 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
     let hardware = if stages.hardware {
         match compile_res.as_ref().and_then(|c| c.binary.clone()) {
             Some(bin) => {
-                let native = cfg.target.starts_with(std::env::consts::ARCH) || (cfg.target.starts_with("x86_64") && std::env::consts::ARCH == "x86_64");
-                let emu = if native { None } else { tools.emulator.as_deref() };
-                if !native && emu.is_none() {
-                    limitations.push(format!("target {} is not native and no emulator configured: no execution", cfg.target));
+                let native = cfg.target.starts_with(std::env::consts::ARCH)
+                    || (cfg.target.starts_with("x86_64") && std::env::consts::ARCH == "x86_64");
+                let emu = if native {
                     None
                 } else {
-                    let r = run_binary(&bin, emu, budget.hw_batches, budget.hw_iters, budget.hw_timeout);
+                    tools.emulator.as_deref()
+                };
+                if !native && emu.is_none() {
+                    limitations.push(format!(
+                        "target {} is not native and no emulator configured: no execution",
+                        cfg.target
+                    ));
+                    None
+                } else {
+                    let r = run_binary(
+                        &bin,
+                        emu,
+                        budget.hw_batches,
+                        budget.hw_iters,
+                        budget.hw_timeout,
+                    );
                     replay.push(r.command.join(" "));
                     let mut notes = r.warnings.clone();
                     if r.emulated {
-                        notes.push("EMULATED via user-mode emulator: this is NOT a hardware observation".into());
+                        notes.push(
+                            "EMULATED via user-mode emulator: this is NOT a hardware observation"
+                                .into(),
+                        );
                     }
                     layers.push(LayerOutcome {
                         layer: Layer::Hardware,
-                        status: if r.emulated { Status::Inferred } else if r.outcomes.is_some() { Status::Observed } else { Status::Unknown },
+                        status: if r.emulated {
+                            Status::Inferred
+                        } else if r.outcomes.is_some() {
+                            Status::Observed
+                        } else {
+                            Status::Unknown
+                        },
                         outcomes: r.outcomes.clone(),
-                        tool: if r.emulated { "user-mode emulation".into() } else { format!("native {} ({})", r.host.arch, r.host.cpu_model.clone().unwrap_or_else(|| "unknown cpu".into())) },
+                        tool: if r.emulated {
+                            "user-mode emulation".into()
+                        } else {
+                            format!(
+                                "native {} ({})",
+                                r.host.arch,
+                                r.host
+                                    .cpu_model
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown cpu".into())
+                            )
+                        },
                         notes,
                     });
                     Some(r)
@@ -293,17 +412,20 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
 
     // Order layers in pipeline order for localisation.
     layers.sort_by_key(|l| l.layer);
-    let weak_set = herd_source_weak.as_ref().and_then(|r| r.outcomes.as_ref());
-    let localization = crate::evidence::localize_with_gap(&layers, weak_set.map(|s| ("no-thin-air", s)));
+    let localization = crate::evidence::localize(&layers);
+    if herd_source_weak.is_some() {
+        limitations.push("A nonstandard source-model variant without the no-thin-air axiom was evaluated as diagnostic context; it does not alter classification.".into());
+    }
     limitations.push(format!(
-        "Source model is herd7 `{source_model}`{}. Both exclude out-of-thin-air (po ∪ rf acyclic) and therefore forbid load-buffering outcomes that hardware can produce.",
+        "Source model is herd7 `{source_model}`{}; it retains RC11's `acyclic (sb | rf)` no-thin-air axiom. For load-buffering-shaped cases, compare its exclusions against an architecture model or observed hardware before drawing a mapping conclusion.",
         if source_model.contains("p0982") {
-            " (RC11 with C++20/P0982 release sequences: only RMWs continue a release sequence — this is what Rust specifies)"
+            " (P0982 release sequences: only RMWs continue; Rust documents its atomic rules as C++20)"
         } else {
-            " (stock RC11: same-thread relaxed stores continue release sequences, per C++17 — STRONGER than Rust/C++20)"
+            " (stock RC11 release-sequence semantics)"
         }
     ));
-    limitations.push("Hardware outcome sets are finite samples: absence is not impossibility.".into());
+    limitations
+        .push("Hardware outcome sets are finite samples: absence is not impossibility.".into());
 
     let case_id = format!("{}-{}", litmus.name, &litmus.digest()[..12]);
     Ok(Bundle {
@@ -334,12 +456,19 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
 }
 
 pub fn now_utc() -> String {
-    let d = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
     // Civil date from days since epoch (proleptic Gregorian), no external crate.
     let secs = d.as_secs();
     let days = secs / 86400;
     let (y, m, dd) = civil_from_days(days as i64);
-    format!("{y:04}-{m:02}-{dd:02}T{:02}:{:02}:{:02}Z", (secs % 86400) / 3600, (secs % 3600) / 60, secs % 60)
+    format!(
+        "{y:04}-{m:02}-{dd:02}T{:02}:{:02}:{:02}Z",
+        (secs % 86400) / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 fn civil_from_days(z: i64) -> (i64, u32, u32) {

@@ -4,12 +4,16 @@ use rustlitmus::compile::CompileConfig;
 use rustlitmus::evidence::{Bundle, Classification, Provenance};
 use rustlitmus::families::{parse_case_name, Family};
 use rustlitmus::miri::MiriConfig;
-use rustlitmus::pipeline::{now_utc, run_case, Budget, Stages, Tools};
+use rustlitmus::pipeline::{now_utc, run_case, Budget, RunContext, Stages, Tools};
 use std::path::PathBuf;
 use std::time::Duration;
 
 #[derive(Parser)]
-#[command(name = "rustlitmus", version, about = "Cross-layer semantic evidence and localisation for concurrent Rust")]
+#[command(
+    name = "rustlitmus",
+    version,
+    about = "Cross-layer semantic evidence and localisation for concurrent Rust"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -36,13 +40,28 @@ struct ToolArgs {
 
 impl ToolArgs {
     fn tools(&self) -> Tools {
-        let herd = self.herd.clone().or_else(|| rustlitmus::process::which("herd7"));
-        let sysroot = self.miri_sysroot.clone().or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/miri")));
+        let herd = self
+            .herd
+            .clone()
+            .or_else(|| rustlitmus::process::which("herd7"));
+        let sysroot = self
+            .miri_sysroot
+            .clone()
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache/miri")));
         let mk = |d: &Option<PathBuf>| match (d, &sysroot) {
-            (Some(d), Some(s)) => Some(MiriConfig { driver: d.clone(), sysroot: s.clone(), extra_flags: vec![] }),
+            (Some(d), Some(s)) => Some(MiriConfig {
+                driver: d.clone(),
+                sysroot: s.clone(),
+                extra_flags: vec![],
+            }),
             _ => None,
         };
-        Tools { herd, miri: mk(&self.miri), miri_genmc: mk(&self.miri_genmc), emulator: self.emulator.clone() }
+        Tools {
+            herd,
+            miri: mk(&self.miri),
+            miri_genmc: mk(&self.miri_genmc),
+            emulator: self.emulator.clone(),
+        }
     }
 }
 
@@ -68,13 +87,20 @@ impl ConfigArgs {
             if !extra.iter().any(|f| f.contains("outline-atomics")) {
                 extra.push("-Ctarget-feature=-outline-atomics".into());
             }
-            if !extra.iter().any(|f| f.starts_with("-Clinker")) && std::env::consts::ARCH != "aarch64" {
+            if !extra.iter().any(|f| f.starts_with("-Clinker"))
+                && std::env::consts::ARCH != "aarch64"
+            {
                 if let Some(cc) = rustlitmus::process::which("aarch64-linux-gnu-gcc") {
                     extra.push(format!("-Clinker={}", cc.display()));
                 }
             }
         }
-        CompileConfig { toolchain: self.toolchain.clone(), target: self.target.clone(), opt_level: self.opt_level.clone(), extra_flags: extra }
+        CompileConfig {
+            toolchain: self.toolchain.clone(),
+            target: self.target.clone(),
+            opt_level: self.opt_level.clone(),
+            extra_flags: extra,
+        }
     }
 }
 
@@ -203,7 +229,8 @@ fn litmus_for(case: &str) -> Result<rustlitmus::litmus::Litmus> {
     let p = PathBuf::from(case);
     if p.is_file() {
         let s = std::fs::read_to_string(&p)?;
-        let l: rustlitmus::litmus::Litmus = serde_json::from_str(&s).context("parse litmus JSON")?;
+        let l: rustlitmus::litmus::Litmus =
+            serde_json::from_str(&s).context("parse litmus JSON")?;
         l.validate().map_err(|e| anyhow!(e))?;
         return Ok(l);
     }
@@ -214,14 +241,36 @@ fn summarise(b: &Bundle) -> String {
     let mut s = String::new();
     s.push_str(&format!("case {}  ({})\n", b.case_id, b.litmus.name));
     if let Some(c) = &b.compile {
-        s.push_str(&format!("config {}  rustc {}  LLVM {}\n", c.config.label(), c.toolchain.rustc_version, c.toolchain.llvm_version.as_deref().unwrap_or("?")));
+        s.push_str(&format!(
+            "config {}  rustc {}  LLVM {}\n",
+            c.config.label(),
+            c.toolchain.rustc_version,
+            c.toolchain.llvm_version.as_deref().unwrap_or("?")
+        ));
     }
     for l in &b.layers {
         let set = match &l.outcomes {
-            Some(o) => format!("{}{}", o.outcomes.iter().map(|x| format!("[{x}]")).collect::<Vec<_>>().join(" "), if o.exhaustive { " (exhaustive)" } else { " (sampled)" }),
+            Some(o) => format!(
+                "{}{}",
+                o.outcomes
+                    .iter()
+                    .map(|x| format!("[{x}]"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                if o.exhaustive {
+                    " (exhaustive)"
+                } else {
+                    " (sampled)"
+                }
+            ),
             None => "—".to_string(),
         };
-        s.push_str(&format!("  {:<42} {:?}: {}\n", l.layer.name(), l.status, set));
+        s.push_str(&format!(
+            "  {:<42} {:?}: {}\n",
+            l.layer.name(),
+            l.status,
+            set
+        ));
         for n in &l.notes {
             s.push_str(&format!("      note: {n}\n"));
         }
@@ -231,12 +280,19 @@ fn summarise(b: &Bundle) -> String {
     s.push_str(&format!("score: {:.1} ({:?})\n", sc.total, sc.bucket));
     for c in &b.localization.against_hardware {
         if !matches!(c.classification, Classification::Consistent) {
-            s.push_str(&format!("  vs hardware: {} — {}\n", c.a.name(), rustlitmus::evidence::describe(&c.classification)));
+            s.push_str(&format!(
+                "  vs hardware: {} — {}\n",
+                c.a.name(),
+                rustlitmus::evidence::describe(&c.classification)
+            ));
         }
     }
     for tp in &b.pipeline {
         if let Some((a, bb)) = &tp.first_ordering_change {
-            s.push_str(&format!("  {}: ordering annotations change between {a} and {bb}: {:?}\n", tp.symbol, tp.ordering_chain));
+            s.push_str(&format!(
+                "  {}: ordering annotations change between {a} and {bb}: {:?}\n",
+                tp.symbol, tp.ordering_chain
+            ));
         }
     }
     if let Some(e) = &b.lift_error {
@@ -253,7 +309,12 @@ fn main() -> Result<()> {
     match cli.cmd {
         Cmd::Families => {
             for f in Family::ALL {
-                println!("{:<12} slots={} instances={}", f.name(), f.slots(), f.all_instances().len());
+                println!(
+                    "{:<12} slots={} instances={}",
+                    f.name(),
+                    f.slots(),
+                    f.all_instances().len()
+                );
             }
         }
         Cmd::Render { case, what } => {
@@ -265,22 +326,63 @@ fn main() -> Result<()> {
                 _ => bail!("--what must be rust, c11 or json"),
             }
         }
-        Cmd::Run { case, out, tools, cfg, budget, skip, source_model, reason } => {
+        Cmd::Run {
+            case,
+            out,
+            tools,
+            cfg,
+            budget,
+            skip,
+            source_model,
+            reason,
+        } => {
             let l = litmus_for(&case)?;
             let cfg = cfg.config();
             let work = out.join(&l.name).join(cfg.label());
-            let prov = Provenance { generator: "cli".into(), generation_reason: reason, seed: None, family: l.name.split('+').next().unwrap_or("").into(), parent_case: None, created_utc: now_utc() };
-            let b = run_case(&l, &cfg, &tools.tools(), &budget.budget(), &parse_skip(&skip), &work, prov, &source_model).map_err(|e| anyhow!(e))?;
+            let prov = Provenance {
+                generator: "cli".into(),
+                generation_reason: reason,
+                seed: None,
+                family: l.name.split('+').next().unwrap_or("").into(),
+                parent_case: None,
+                created_utc: now_utc(),
+            };
+            let tools = tools.tools();
+            let budget = budget.budget();
+            let stages = parse_skip(&skip);
+            let context = RunContext {
+                cfg: &cfg,
+                tools: &tools,
+                budget: &budget,
+                stages: &stages,
+                source_model: &source_model,
+            };
+            let b = run_case(&l, context, &work, prov).map_err(|e| anyhow!(e))?;
             let path = work.join("bundle.json");
             std::fs::write(&path, b.to_json())?;
             print!("{}", summarise(&b));
             println!("bundle: {}", path.display());
         }
-        Cmd::Sweep { family, out, tools, cfg, budget, skip, source_model, max_cases, max_secs } => {
+        Cmd::Sweep {
+            family,
+            out,
+            tools,
+            cfg,
+            budget,
+            skip,
+            source_model,
+            max_cases,
+            max_secs,
+        } => {
             let fams: Vec<Family> = if family == "all" {
                 Family::ALL.to_vec()
             } else {
-                family.split(',').map(|f| Family::from_name(f.trim()).ok_or_else(|| anyhow!("unknown family {f}"))).collect::<Result<Vec<_>>>()?
+                family
+                    .split(',')
+                    .map(|f| {
+                        Family::from_name(f.trim()).ok_or_else(|| anyhow!("unknown family {f}"))
+                    })
+                    .collect::<Result<Vec<_>>>()?
             };
             let cfg = cfg.config();
             let tools = tools.tools();
@@ -292,7 +394,10 @@ fn main() -> Result<()> {
             let mut unsupported = 0usize;
             let index_path = out.join("sweep-index.jsonl");
             std::fs::create_dir_all(&out)?;
-            let mut index = std::fs::OpenOptions::new().create(true).append(true).open(&index_path)?;
+            let mut index = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&index_path)?;
             'outer: for f in fams {
                 for l in f.all_instances() {
                     if max_cases > 0 && n >= max_cases {
@@ -308,8 +413,25 @@ fn main() -> Result<()> {
                     if work.join("bundle.json").is_file() {
                         continue;
                     }
-                    let prov = Provenance { generator: "sweep".into(), generation_reason: format!("exhaustive ordering enumeration of family {}", f.name()), seed: None, family: f.name().into(), parent_case: None, created_utc: now_utc() };
-                    let b = match run_case(&l, &cfg, &tools, &budget, &stages, &work, prov, &source_model) {
+                    let prov = Provenance {
+                        generator: "sweep".into(),
+                        generation_reason: format!(
+                            "exhaustive ordering enumeration of family {}",
+                            f.name()
+                        ),
+                        seed: None,
+                        family: f.name().into(),
+                        parent_case: None,
+                        created_utc: now_utc(),
+                    };
+                    let context = RunContext {
+                        cfg: &cfg,
+                        tools: &tools,
+                        budget: &budget,
+                        stages: &stages,
+                        source_model: &source_model,
+                    };
+                    let b = match run_case(&l, context, &work, prov) {
                         Ok(b) => b,
                         Err(e) => {
                             eprintln!("{}: error: {e}", l.name);
@@ -318,14 +440,35 @@ fn main() -> Result<()> {
                     };
                     std::fs::write(work.join("bundle.json"), b.to_json())?;
                     let div = b.localization.earliest_divergence.is_some();
-                    let hw_flags: Vec<String> = b.localization.against_hardware.iter().filter(|c| matches!(c.classification, Classification::ObservedOutsidePrediction { .. })).map(|c| rustlitmus::evidence::describe(&c.classification)).collect();
+                    let hw_flags: Vec<String> = b
+                        .localization
+                        .against_hardware
+                        .iter()
+                        .filter(|c| {
+                            matches!(
+                                c.classification,
+                                Classification::ObservedOutsidePrediction { .. }
+                            )
+                        })
+                        .map(|c| rustlitmus::evidence::describe(&c.classification))
+                        .collect();
                     if b.lift_error.is_some() {
                         unsupported += 1;
                     }
                     use std::io::Write;
                     let sc = rustlitmus::score::score(&b);
-                    writeln!(index, "{}", serde_json::json!({"case": l.name, "config": cfg.label(), "divergence": b.localization.summary, "hardware_outside_prediction": hw_flags, "lift_error": b.lift_error.as_ref().map(|e| e.to_string()), "score": sc.total, "bucket": sc.bucket}))?;
-                    let mark = if !hw_flags.is_empty() { "!!" } else if div { "~" } else { " " };
+                    writeln!(
+                        index,
+                        "{}",
+                        serde_json::json!({"case": l.name, "config": cfg.label(), "divergence": b.localization.summary, "hardware_outside_prediction": hw_flags, "lift_error": b.lift_error.as_ref().map(|e| e.to_string()), "score": sc.total, "bucket": sc.bucket})
+                    )?;
+                    let mark = if !hw_flags.is_empty() {
+                        "!!"
+                    } else if div {
+                        "~"
+                    } else {
+                        " "
+                    };
                     println!("{mark} {:<40} {}", l.name, b.localization.summary);
                     for h in &hw_flags {
                         println!("     HARDWARE OUTSIDE PREDICTION: {h}");
@@ -347,14 +490,43 @@ fn main() -> Result<()> {
                 println!("  {r}");
             }
         }
-        Cmd::Replay { bundle, out, tools, budget, skip, source_model } => {
+        Cmd::Replay {
+            bundle,
+            out,
+            tools,
+            budget,
+            skip,
+            source_model,
+        } => {
             let s = std::fs::read_to_string(&bundle)?;
             let b = Bundle::from_json(&s).map_err(|e| anyhow!(e))?;
-            let cfg = b.config().cloned().ok_or_else(|| anyhow!("bundle has no compile config to replay"))?;
+            let cfg = b
+                .config()
+                .cloned()
+                .ok_or_else(|| anyhow!("bundle has no compile config to replay"))?;
             let work = out.join(&b.litmus.name).join(cfg.label());
-            let prov = Provenance { generator: "replay".into(), generation_reason: format!("replay of {}", b.case_id), seed: None, family: b.provenance.family.clone(), parent_case: Some(b.case_id.clone()), created_utc: now_utc() };
-            let source_model = source_model.or_else(|| b.herd_source.as_ref().map(|h| h.model.clone())).unwrap_or_else(|| "models/rc11-p0982.cat".into());
-            let nb = run_case(&b.litmus, &cfg, &tools.tools(), &budget.budget(), &parse_skip(&skip), &work, prov, &source_model).map_err(|e| anyhow!(e))?;
+            let prov = Provenance {
+                generator: "replay".into(),
+                generation_reason: format!("replay of {}", b.case_id),
+                seed: None,
+                family: b.provenance.family.clone(),
+                parent_case: Some(b.case_id.clone()),
+                created_utc: now_utc(),
+            };
+            let source_model = source_model
+                .or_else(|| b.herd_source.as_ref().map(|h| h.model.clone()))
+                .unwrap_or_else(|| "models/rc11-p0982.cat".into());
+            let tools = tools.tools();
+            let budget = budget.budget();
+            let stages = parse_skip(&skip);
+            let context = RunContext {
+                cfg: &cfg,
+                tools: &tools,
+                budget: &budget,
+                stages: &stages,
+                source_model: &source_model,
+            };
+            let nb = run_case(&b.litmus, context, &work, prov).map_err(|e| anyhow!(e))?;
             std::fs::write(work.join("bundle.json"), nb.to_json())?;
             print!("{}", summarise(&nb));
             let mut same = true;
@@ -364,9 +536,24 @@ fn main() -> Result<()> {
                 if !eq {
                     same = false;
                 }
-                println!("  {:<42} {}", l.layer.name(), if eq { "outcome set reproduced" } else { "outcome set DIFFERS from preserved bundle" });
+                println!(
+                    "  {:<42} {}",
+                    l.layer.name(),
+                    if eq {
+                        "outcome set reproduced"
+                    } else {
+                        "outcome set DIFFERS from preserved bundle"
+                    }
+                );
             }
-            println!("replay: {}", if same { "all preserved outcome sets reproduced" } else { "differences found (see above)" });
+            println!(
+                "replay: {}",
+                if same {
+                    "all preserved outcome sets reproduced"
+                } else {
+                    "differences found (see above)"
+                }
+            );
             if !same {
                 std::process::exit(2);
             }

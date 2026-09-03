@@ -3,6 +3,13 @@
 Chronological. Each entry records what was done, what was observed, and what it changed.
 "Observed" means seen in this sandbox on this date; everything else is labelled.
 
+## Verification status
+
+The entries below were reported by an automated run in a separate environment. No evidence
+bundles from that environment are tracked in this repository, and they have not yet been
+independently replayed after merge. Treat them as leads, not confirmed results, until a
+bundle is generated and replayed on a documented toolchain.
+
 ## 2026-09-03 — Environment, prior art, first vertical path
 
 ### Environment (observed)

@@ -32,15 +32,28 @@ use std::fmt::Write;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LiftError {
-    Unsupported { thread: usize, line: String, reason: String },
-    NoAsm { thread: usize },
+    Unsupported {
+        thread: usize,
+        line: String,
+        reason: String,
+    },
+    NoAsm {
+        thread: usize,
+    },
     Target(String),
 }
 
 impl std::fmt::Display for LiftError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LiftError::Unsupported { thread, line, reason } => write!(f, "thread {thread}: unsupported instruction {line:?}: {reason}"),
+            LiftError::Unsupported {
+                thread,
+                line,
+                reason,
+            } => write!(
+                f,
+                "thread {thread}: unsupported instruction {line:?}: {reason}"
+            ),
             LiftError::NoAsm { thread } => write!(f, "thread {thread}: no assembly captured"),
             LiftError::Target(t) => write!(f, "unsupported target for lifting: {t}"),
         }
@@ -75,18 +88,32 @@ fn parse_lines(asm: &str) -> Vec<Line> {
     let mut out = Vec::new();
     for raw in asm.lines().skip(1) {
         let l = raw.trim();
-        if l.is_empty() || l.starts_with('.') || l.starts_with("//") || l.starts_with(HASH) || l.starts_with(';') {
+        if l.is_empty()
+            || l.starts_with('.')
+            || l.starts_with("//")
+            || l.starts_with(HASH)
+            || l.starts_with(';')
+        {
             continue;
         }
         if let Some(lbl) = l.strip_suffix(':') {
-            out.push(Line { label: Some(lbl.to_string()), mnem: String::new(), ops: vec![], raw: raw.to_string() });
+            out.push(Line {
+                label: Some(lbl.to_string()),
+                mnem: String::new(),
+                ops: vec![],
+                raw: raw.to_string(),
+            });
             continue;
         }
         let (mnem, rest) = l.split_once(char::is_whitespace).unwrap_or((l, ""));
         // Strip trailing comments. AArch64 uses `//`; x86 AT&T uses `#` but AArch64 uses
         // `#` for immediates, so only strip `#` comments when the operands look like AT&T.
         let rest = rest.split("//").next().unwrap_or("");
-        let rest = if rest.contains(DOLLAR) || rest.contains(PERCENT) { rest.split(HASH).next().unwrap_or("") } else { rest };
+        let rest = if rest.contains(DOLLAR) || rest.contains(PERCENT) {
+            rest.split(HASH).next().unwrap_or("")
+        } else {
+            rest
+        };
         let mut ops = Vec::new();
         let mut depth = 0;
         let mut cur = String::new();
@@ -110,7 +137,12 @@ fn parse_lines(asm: &str) -> Vec<Line> {
         if !cur.trim().is_empty() {
             ops.push(cur.trim().to_string());
         }
-        out.push(Line { label: None, mnem: mnem.to_lowercase(), ops, raw: raw.to_string() });
+        out.push(Line {
+            label: None,
+            mnem: mnem.to_lowercase(),
+            ops,
+            raw: raw.to_string(),
+        });
     }
     out
 }
@@ -174,7 +206,11 @@ struct A64Thread {
     init: Vec<(String, String)>,
 }
 
-fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Thread, Vec<String>), LiftError> {
+fn lift_aarch64_thread(
+    t: usize,
+    asm: &str,
+    litmus: &Litmus,
+) -> Result<(A64Thread, Vec<String>), LiftError> {
     let lines = parse_lines(asm);
     let mut vals: BTreeMap<String, Val> = BTreeMap::new();
     vals.insert("x0".into(), Val::Locs(0));
@@ -184,7 +220,11 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
     let mut init: Vec<(String, String)> = Vec::new();
     let mut folded = Vec::new();
     let nlocs = litmus.locations.len();
-    let unsupported = |line: &Line, reason: &str| LiftError::Unsupported { thread: t, line: line.raw.trim().to_string(), reason: reason.into() };
+    let unsupported = |line: &Line, reason: &str| LiftError::Unsupported {
+        thread: t,
+        line: line.raw.trim().to_string(),
+        reason: reason.into(),
+    };
 
     // Resolve a memory operand to `[X2k]`, a dedicated pointer register for location k that
     // is initialised to the location symbol in the herd init block. The compiler's own
@@ -192,8 +232,13 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
     // register herd initialises cannot also be written earlier in the thread (e.g. x8 used
     // for data before becoming a pointer), and this keeps the lifted test independent of
     // register allocation. Pointer-producing instructions are folded (recorded, not emitted).
-    let resolve = |op: &str, vals: &BTreeMap<String, Val>, init: &mut Vec<(String, String)>, line: &Line| -> Result<String, LiftError> {
-        let (base, off) = a64_mem(op).ok_or_else(|| unsupported(line, "unparsable memory operand"))?;
+    let resolve = |op: &str,
+                   vals: &BTreeMap<String, Val>,
+                   init: &mut Vec<(String, String)>,
+                   line: &Line|
+     -> Result<String, LiftError> {
+        let (base, off) =
+            a64_mem(op).ok_or_else(|| unsupported(line, "unparsable memory operand"))?;
         match vals.get(&base) {
             Some(Val::Locs(b)) => {
                 let addr = b + off;
@@ -227,7 +272,11 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                     out.push(format!("MOV {}, #{}", up(0), imm));
                 } else {
                     let src = a64_base_reg(&ops[1]);
-                    let v = if src == "zr" { Val::Imm(0) } else { vals.get(&src).cloned().unwrap_or(Val::Unknown) };
+                    let v = if src == "zr" {
+                        Val::Imm(0)
+                    } else {
+                        vals.get(&src).cloned().unwrap_or(Val::Unknown)
+                    };
                     if matches!(v, Val::Locs(_) | Val::Regs(_)) {
                         vals.insert(dst, v);
                         folded.push(format!("{} (pointer copy)", line.raw.trim()));
@@ -248,7 +297,10 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                             vals.insert(dst, Val::Locs(addr));
                             folded.push(format!("{} (pointer arithmetic)", line.raw.trim()));
                         } else {
-                            return Err(unsupported(line, "pointer arithmetic does not hit a location"));
+                            return Err(unsupported(
+                                line,
+                                "pointer arithmetic does not hit a location",
+                            ));
                         }
                     }
                     (Some(Val::Regs(b)), Some(i)) => {
@@ -283,7 +335,8 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                 out.push(format!("{} {}, {}", line.mnem.to_uppercase(), up(0), m));
             }
             "str" | "stlr" => {
-                let (base, off) = a64_mem(&ops[1]).ok_or_else(|| unsupported(line, "unparsable store operand"))?;
+                let (base, off) = a64_mem(&ops[1])
+                    .ok_or_else(|| unsupported(line, "unparsable store operand"))?;
                 if let Some(Val::Regs(b)) = vals.get(&base) {
                     let addr = b + off;
                     if addr % 4 != 0 {
@@ -301,20 +354,27 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                     if outputs.insert(r, snap).is_some() {
                         return Err(unsupported(line, "register written twice"));
                     }
-                    folded.push(format!("{} (result write-back snapshotted)", line.raw.trim()));
+                    folded.push(format!(
+                        "{} (result write-back snapshotted)",
+                        line.raw.trim()
+                    ));
                     continue;
                 }
                 let m = resolve(&ops[1], &vals, &mut init, line)?;
                 out.push(format!("{} {}, {}", line.mnem.to_uppercase(), up(0), m));
             }
             "stp" => {
-                let (base, off) = a64_mem(&ops[2]).ok_or_else(|| unsupported(line, "unparsable stp operand"))?;
+                let (base, off) =
+                    a64_mem(&ops[2]).ok_or_else(|| unsupported(line, "unparsable stp operand"))?;
                 if let Some(Val::Regs(b)) = vals.get(&base) {
                     let r = ((b + off) / 4) as usize;
                     for (k, reg) in [(&ops[0], r), (&ops[1], r + 1)] {
                         let src = a64_base_reg(k);
                         if src == "zr" {
-                            return Err(unsupported(line, "constant-folded result written to regs"));
+                            return Err(unsupported(
+                                line,
+                                "constant-folded result written to regs",
+                            ));
                         }
                         let snap = format!("X{}", 24 + reg);
                         out.push(format!("MOV {snap}, {}", src.to_uppercase()));
@@ -322,31 +382,56 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
                             return Err(unsupported(line, "register written twice"));
                         }
                     }
-                    folded.push(format!("{} (result write-back snapshotted)", line.raw.trim()));
+                    folded.push(format!(
+                        "{} (result write-back snapshotted)",
+                        line.raw.trim()
+                    ));
                     continue;
                 }
                 return Err(unsupported(line, "stp to shared memory"));
             }
             "stxr" | "stlxr" => {
                 let m = resolve(&ops[2], &vals, &mut init, line)?;
-                out.push(format!("{} {}, {}, {}", line.mnem.to_uppercase(), up(0), up(1), m));
+                out.push(format!(
+                    "{} {}, {}, {}",
+                    line.mnem.to_uppercase(),
+                    up(0),
+                    up(1),
+                    m
+                ));
             }
-            "cas" | "casa" | "casl" | "casal" | "swp" | "swpa" | "swpl" | "swpal" | "ldadd" | "ldadda" | "ldaddl" | "ldaddal" => {
+            "cas" | "casa" | "casl" | "casal" | "swp" | "swpa" | "swpl" | "swpal" | "ldadd"
+            | "ldadda" | "ldaddl" | "ldaddal" => {
                 let m = resolve(&ops[2], &vals, &mut init, line)?;
                 vals.insert(a64_base_reg(&ops[1]), Val::Unknown);
                 if line.mnem.starts_with("cas") {
                     vals.insert(a64_base_reg(&ops[0]), Val::Unknown);
                 }
-                out.push(format!("{} {}, {}, {}", line.mnem.to_uppercase(), up(0), up(1), m));
+                out.push(format!(
+                    "{} {}, {}, {}",
+                    line.mnem.to_uppercase(),
+                    up(0),
+                    up(1),
+                    m
+                ));
             }
             "stadd" | "staddl" => {
                 let m = resolve(&ops[1], &vals, &mut init, line)?;
                 out.push(format!("{} {}, {}", line.mnem.to_uppercase(), up(0), m));
             }
             "dmb" | "dsb" => out.push(format!("{} {}", line.mnem.to_uppercase(), up(0))),
-            "cbnz" | "cbz" => out.push(format!("{} {}, {}", line.mnem.to_uppercase(), up(0), label_name(&ops[1]))),
+            "cbnz" | "cbz" => out.push(format!(
+                "{} {}, {}",
+                line.mnem.to_uppercase(),
+                up(0),
+                label_name(&ops[1])
+            )),
             "b" => out.push(format!("B {}", label_name(&ops[0]))),
-            "b.ne" | "b.eq" => out.push(format!("{} {}", line.mnem.to_uppercase(), label_name(&ops[0]))),
+            "b.ne" | "b.eq" => out.push(format!(
+                "{} {}",
+                line.mnem.to_uppercase(),
+                label_name(&ops[0])
+            )),
             "cmp" => {
                 if let Some(i) = parse_imm(&ops[1]) {
                     out.push(format!("CMP {}, #{}", up(0), i));
@@ -356,16 +441,32 @@ fn lift_aarch64_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(A64Threa
             }
             "clrex" => out.push("CLREX".into()),
             "ret" => break,
-            "bl" => return Err(unsupported(line, "call to out-of-line helper (compile with -outline-atomics)")),
+            "bl" => {
+                return Err(unsupported(
+                    line,
+                    "call to out-of-line helper (compile with -outline-atomics)",
+                ))
+            }
             _ => return Err(unsupported(line, "mnemonic not in lifter whitelist")),
         }
     }
     for r in 0..litmus.threads[t].num_regs() {
         if !outputs.contains_key(&r) {
-            return Err(LiftError::Unsupported { thread: t, line: String::new(), reason: format!("no write-back found for source register r{r}") });
+            return Err(LiftError::Unsupported {
+                thread: t,
+                line: String::new(),
+                reason: format!("no write-back found for source register r{r}"),
+            });
         }
     }
-    Ok((A64Thread { lines: out, outputs, init }, folded))
+    Ok((
+        A64Thread {
+            lines: out,
+            outputs,
+            init,
+        },
+        folded,
+    ))
 }
 
 fn render_columns(threads: &[Vec<String>]) -> String {
@@ -374,7 +475,10 @@ fn render_columns(threads: &[Vec<String>]) -> String {
     let _ = writeln!(s, "{};", heads.join("|"));
     let max = threads.iter().map(|t| t.len()).max().unwrap_or(0);
     for i in 0..max {
-        let row: Vec<String> = threads.iter().map(|t| format!(" {} ", t.get(i).map(String::as_str).unwrap_or(""))).collect();
+        let row: Vec<String> = threads
+            .iter()
+            .map(|t| format!(" {} ", t.get(i).map(String::as_str).unwrap_or("")))
+            .collect();
         let _ = writeln!(s, "{};", row.join("|"));
     }
     s
@@ -383,7 +487,11 @@ fn render_columns(threads: &[Vec<String>]) -> String {
 fn render_aarch64(litmus: &Litmus, threads: Vec<A64Thread>, folded: Vec<String>) -> Lifted {
     let mut s = String::new();
     let _ = writeln!(s, "AArch64 {}", crate::render_c11::sanitize(&litmus.name));
-    let _ = writeln!(s, "(* lifted from rustc output by rustlitmus; digest {} *)", litmus.digest());
+    let _ = writeln!(
+        s,
+        "(* lifted from rustc output by rustlitmus; digest {} *)",
+        litmus.digest()
+    );
     let _ = writeln!(s, "{{");
     for l in &litmus.locations {
         let _ = writeln!(s, "uint32_t {l} = 0;");
@@ -397,7 +505,9 @@ fn render_aarch64(litmus: &Litmus, threads: Vec<A64Thread>, folded: Vec<String>)
         }
     }
     let _ = writeln!(s, "}}");
-    s.push_str(&render_columns(&threads.iter().map(|t| t.lines.clone()).collect::<Vec<_>>()));
+    s.push_str(&render_columns(
+        &threads.iter().map(|t| t.lines.clone()).collect::<Vec<_>>(),
+    ));
     let mut reg_map = Vec::new();
     let mut locs = Vec::new();
     for (t, th) in threads.iter().enumerate() {
@@ -413,7 +523,12 @@ fn render_aarch64(litmus: &Litmus, threads: Vec<A64Thread>, folded: Vec<String>)
         let _ = writeln!(s, "locations [{};]", locs.join("; "));
     }
     let _ = writeln!(s, "exists (true)");
-    Lifted { arch: "AArch64".into(), litmus_text: s, reg_map, folded }
+    Lifted {
+        arch: "AArch64".into(),
+        litmus_text: s,
+        reg_map,
+        folded,
+    }
 }
 
 // ---------------------------------------------------------------- X86_64
@@ -458,7 +573,11 @@ fn att32(canon: &str) -> String {
 fn x86_mem(op: &str) -> Option<(String, i64)> {
     let op = op.trim();
     let paren = op.find('(')?;
-    let off = if paren == 0 { 0 } else { parse_imm(&op[..paren])? };
+    let off = if paren == 0 {
+        0
+    } else {
+        parse_imm(&op[..paren])?
+    };
     let inner = op[paren + 1..].strip_suffix(')')?;
     if inner.contains(',') {
         return None;
@@ -476,7 +595,11 @@ struct X86Thread {
     outputs: BTreeMap<usize, String>,
 }
 
-fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, Vec<String>), LiftError> {
+fn lift_x86_thread(
+    t: usize,
+    asm: &str,
+    litmus: &Litmus,
+) -> Result<(X86Thread, Vec<String>), LiftError> {
     let lines = parse_lines(asm);
     let mut vals: BTreeMap<String, Val> = BTreeMap::new();
     vals.insert("rdi".into(), Val::Locs(0));
@@ -485,16 +608,27 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
     let mut outputs: BTreeMap<usize, String> = BTreeMap::new();
     let mut folded = Vec::new();
     let nlocs = litmus.locations.len();
-    let unsupported = |line: &Line, reason: &str| LiftError::Unsupported { thread: t, line: line.raw.trim().to_string(), reason: reason.into() };
-    let classify = |op: &str, vals: &BTreeMap<String, Val>, line: &Line| -> Result<Option<X86Loc>, LiftError> {
-        let Some((base, off)) = x86_mem(op) else { return Ok(None) };
+    let unsupported = |line: &Line, reason: &str| LiftError::Unsupported {
+        thread: t,
+        line: line.raw.trim().to_string(),
+        reason: reason.into(),
+    };
+    let classify = |op: &str,
+                    vals: &BTreeMap<String, Val>,
+                    line: &Line|
+     -> Result<Option<X86Loc>, LiftError> {
+        let Some((base, off)) = x86_mem(op) else {
+            return Ok(None);
+        };
         match vals.get(&base) {
             Some(Val::Locs(b)) => {
                 let addr = b + off;
                 if addr < 0 || addr % 64 != 0 || ((addr / 64) as usize) >= nlocs {
                     return Err(unsupported(line, "address does not resolve to a location"));
                 }
-                Ok(Some(X86Loc::Shared(litmus.locations[(addr / 64) as usize].clone())))
+                Ok(Some(X86Loc::Shared(
+                    litmus.locations[(addr / 64) as usize].clone(),
+                )))
             }
             Some(Val::Regs(b)) => {
                 let addr = b + off;
@@ -522,12 +656,16 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
         // Normalise `lock` prefix: it may be alone on a line or fused (`lock\t\txaddl\t%eax, 64(%rdi)`).
         let (mnem, ops, locked): (String, Vec<String>, bool) = if line.mnem == "lock" {
             if line.ops.is_empty() {
-                let next = lines.get(i).ok_or_else(|| unsupported(line, "dangling lock prefix"))?;
+                let next = lines
+                    .get(i)
+                    .ok_or_else(|| unsupported(line, "dangling lock prefix"))?;
                 i += 1;
                 (next.mnem.clone(), next.ops.clone(), true)
             } else {
                 let first = line.ops[0].clone();
-                let (m, a) = first.split_once(char::is_whitespace).ok_or_else(|| unsupported(line, "malformed lock prefix"))?;
+                let (m, a) = first
+                    .split_once(char::is_whitespace)
+                    .ok_or_else(|| unsupported(line, "malformed lock prefix"))?;
                 let mut o = vec![a.trim().to_string()];
                 o.extend(line.ops[1..].iter().cloned());
                 (m.to_lowercase(), o, true)
@@ -536,9 +674,17 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
             (line.mnem.clone(), line.ops.clone(), false)
         };
         let lock = if locked { "lock " } else { "" };
-        let suffix = if mnem.ends_with('q') && mnem != "cmpxchgq" { "q" } else { "l" };
+        let suffix = if mnem.ends_with('q') && mnem != "cmpxchgq" {
+            "q"
+        } else {
+            "l"
+        };
         let base = mnem.trim_end_matches(['l', 'q', 'b', 'w']).to_string();
-        let base = if mnem == "cmpxchgl" || mnem == "cmpxchgq" || mnem == "cmpxchg" { "cmpxchg".to_string() } else { base };
+        let base = if mnem == "cmpxchgl" || mnem == "cmpxchgq" || mnem == "cmpxchg" {
+            "cmpxchg".to_string()
+        } else {
+            base
+        };
         match base.as_str() {
             "mov" => {
                 let src = &ops[0];
@@ -558,7 +704,10 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
                     }
                     (None, Some(X86Loc::RegSlot(r))) => {
                         if parse_imm(src).is_some() {
-                            return Err(unsupported(line, "constant-folded result written to regs"));
+                            return Err(unsupported(
+                                line,
+                                "constant-folded result written to regs",
+                            ));
                         }
                         let s = x86_reg(src);
                         // The compiler may reuse the same physical register for several
@@ -574,39 +723,73 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
                         if outputs.insert(r, snap).is_some() {
                             return Err(unsupported(line, "register written twice"));
                         }
-                        folded.push(format!("{} (result write-back snapshotted)", line.raw.trim()));
+                        folded.push(format!(
+                            "{} (result write-back snapshotted)",
+                            line.raw.trim()
+                        ));
                     }
                     (None, None) => {
                         let d = x86_reg(dst);
                         if let Some(imm) = parse_imm(src) {
                             vals.insert(d.clone(), Val::Imm(imm));
-                            out.push(format!("mov{suffix} {DOLLAR}{imm},{}", if suffix == "q" { format!("{PERCENT}{d}") } else { att32(&d) }));
+                            out.push(format!(
+                                "mov{suffix} {DOLLAR}{imm},{}",
+                                if suffix == "q" {
+                                    format!("{PERCENT}{d}")
+                                } else {
+                                    att32(&d)
+                                }
+                            ));
                         } else {
                             let s = x86_reg(src);
                             let v = vals.get(&s).cloned().unwrap_or(Val::Unknown);
                             vals.insert(d.clone(), v);
-                            out.push(format!("mov{suffix} {},{}", if suffix == "q" { format!("{PERCENT}{s}") } else { att32(&s) }, if suffix == "q" { format!("{PERCENT}{d}") } else { att32(&d) }));
+                            out.push(format!(
+                                "mov{suffix} {},{}",
+                                if suffix == "q" {
+                                    format!("{PERCENT}{s}")
+                                } else {
+                                    att32(&s)
+                                },
+                                if suffix == "q" {
+                                    format!("{PERCENT}{d}")
+                                } else {
+                                    att32(&d)
+                                }
+                            ));
                         }
                     }
-                    (Some(X86Loc::RegSlot(_)), _) => return Err(unsupported(line, "read from regs")),
+                    (Some(X86Loc::RegSlot(_)), _) => {
+                        return Err(unsupported(line, "read from regs"))
+                    }
                     _ => return Err(unsupported(line, "memory-to-memory move")),
                 }
             }
             "xchg" => {
-                let (reg, mem) = if x86_mem(&ops[1]).is_some() { (&ops[0], &ops[1]) } else { (&ops[1], &ops[0]) };
-                let Some(X86Loc::Shared(loc)) = classify(mem, &vals, line)? else { return Err(unsupported(line, "xchg not on a location")) };
+                let (reg, mem) = if x86_mem(&ops[1]).is_some() {
+                    (&ops[0], &ops[1])
+                } else {
+                    (&ops[1], &ops[0])
+                };
+                let Some(X86Loc::Shared(loc)) = classify(mem, &vals, line)? else {
+                    return Err(unsupported(line, "xchg not on a location"));
+                };
                 let r = x86_reg(reg);
                 vals.insert(r.clone(), Val::Unknown);
                 out.push(format!("xchgl {},({loc})", att32(&r)));
             }
             "xadd" => {
-                let Some(X86Loc::Shared(loc)) = classify(&ops[1], &vals, line)? else { return Err(unsupported(line, "xadd not on a location")) };
+                let Some(X86Loc::Shared(loc)) = classify(&ops[1], &vals, line)? else {
+                    return Err(unsupported(line, "xadd not on a location"));
+                };
                 let r = x86_reg(&ops[0]);
                 vals.insert(r.clone(), Val::Unknown);
                 out.push(format!("{lock}xaddl {},({loc})", att32(&r)));
             }
             "cmpxchg" => {
-                let Some(X86Loc::Shared(loc)) = classify(&ops[1], &vals, line)? else { return Err(unsupported(line, "cmpxchg not on a location")) };
+                let Some(X86Loc::Shared(loc)) = classify(&ops[1], &vals, line)? else {
+                    return Err(unsupported(line, "cmpxchg not on a location"));
+                };
                 let r = x86_reg(&ops[0]);
                 vals.insert("rax".into(), Val::Unknown);
                 out.push(format!("{lock}cmpxchgl ({loc}),{}", att32(&r)));
@@ -618,7 +801,10 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
                         // `lock orl $0, -64(%rsp)`: LLVM's x86 SeqCst fence idiom.
                         if locked {
                             out.push("mfence".into());
-                            folded.push(format!("{} (locked RMW on stack slot ⇒ modelled as mfence)", line.raw.trim()));
+                            folded.push(format!(
+                                "{} (locked RMW on stack slot ⇒ modelled as mfence)",
+                                line.raw.trim()
+                            ));
                         } else {
                             return Err(unsupported(line, "unlocked arithmetic on stack"));
                         }
@@ -629,10 +815,15 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
                         } else if let Some(imm) = parse_imm(&ops[0]) {
                             out.push(format!("{lock}{base}l {DOLLAR}{imm},({loc})"));
                         } else {
-                            out.push(format!("{lock}{base}l {},({loc})", att32(&x86_reg(&ops[0]))));
+                            out.push(format!(
+                                "{lock}{base}l {},({loc})",
+                                att32(&x86_reg(&ops[0]))
+                            ));
                         }
                     }
-                    Some(X86Loc::RegSlot(_)) => return Err(unsupported(line, "arithmetic on regs slot")),
+                    Some(X86Loc::RegSlot(_)) => {
+                        return Err(unsupported(line, "arithmetic on regs slot"))
+                    }
                     None => {
                         let d = x86_reg(memop);
                         vals.insert(d.clone(), Val::Unknown);
@@ -641,7 +832,11 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
                         } else if let Some(imm) = parse_imm(&ops[0]) {
                             out.push(format!("{base}l {DOLLAR}{imm},{}", att32(&d)));
                         } else {
-                            out.push(format!("{base}l {},{}", att32(&x86_reg(&ops[0])), att32(&d)));
+                            out.push(format!(
+                                "{base}l {},{}",
+                                att32(&x86_reg(&ops[0])),
+                                att32(&d)
+                            ));
                         }
                     }
                 }
@@ -666,22 +861,38 @@ fn lift_x86_thread(t: usize, asm: &str, litmus: &Litmus) -> Result<(X86Thread, V
     }
     for r in 0..litmus.threads[t].num_regs() {
         if !outputs.contains_key(&r) {
-            return Err(LiftError::Unsupported { thread: t, line: String::new(), reason: format!("no write-back found for source register r{r}") });
+            return Err(LiftError::Unsupported {
+                thread: t,
+                line: String::new(),
+                reason: format!("no write-back found for source register r{r}"),
+            });
         }
     }
-    Ok((X86Thread { lines: out, outputs }, folded))
+    Ok((
+        X86Thread {
+            lines: out,
+            outputs,
+        },
+        folded,
+    ))
 }
 
 fn render_x86(litmus: &Litmus, threads: Vec<X86Thread>, folded: Vec<String>) -> Lifted {
     let mut s = String::new();
     let _ = writeln!(s, "X86_64 {}", crate::render_c11::sanitize(&litmus.name));
-    let _ = writeln!(s, "(* lifted from rustc output by rustlitmus; digest {} *)", litmus.digest());
+    let _ = writeln!(
+        s,
+        "(* lifted from rustc output by rustlitmus; digest {} *)",
+        litmus.digest()
+    );
     let _ = writeln!(s, "{{");
     for l in &litmus.locations {
         let _ = writeln!(s, "uint32_t {l} = 0;");
     }
     let _ = writeln!(s, "}}");
-    s.push_str(&render_columns(&threads.iter().map(|t| t.lines.clone()).collect::<Vec<_>>()));
+    s.push_str(&render_columns(
+        &threads.iter().map(|t| t.lines.clone()).collect::<Vec<_>>(),
+    ));
     let mut reg_map = Vec::new();
     let mut locs = Vec::new();
     for (t, th) in threads.iter().enumerate() {
@@ -697,11 +908,20 @@ fn render_x86(litmus: &Litmus, threads: Vec<X86Thread>, folded: Vec<String>) -> 
         let _ = writeln!(s, "locations [{};]", locs.join("; "));
     }
     let _ = writeln!(s, "exists (true)");
-    Lifted { arch: "X86_64".into(), litmus_text: s, reg_map, folded }
+    Lifted {
+        arch: "X86_64".into(),
+        litmus_text: s,
+        reg_map,
+        folded,
+    }
 }
 
 /// Lift all threads. `asm_per_thread[t]` is the extracted assembly body of thread `t`.
-pub fn lift(litmus: &Litmus, cfg: &CompileConfig, asm_per_thread: &[Option<String>]) -> Result<Lifted, LiftError> {
+pub fn lift(
+    litmus: &Litmus,
+    cfg: &CompileConfig,
+    asm_per_thread: &[Option<String>],
+) -> Result<Lifted, LiftError> {
     let mut folded_all = Vec::new();
     if cfg.target.starts_with("aarch64") {
         let mut ths = Vec::new();
@@ -735,17 +955,26 @@ pub fn decode_state(line: &str, reg_map: &[Vec<String>]) -> Result<Outcome, Stri
         if item.is_empty() {
             continue;
         }
-        let (lhs, rhs) = item.split_once('=').ok_or_else(|| format!("bad item {item:?}"))?;
-        let (t, r) = lhs.split_once(':').ok_or_else(|| format!("bad lhs {lhs:?}"))?;
+        let (lhs, rhs) = item
+            .split_once('=')
+            .ok_or_else(|| format!("bad item {item:?}"))?;
+        let (t, r) = lhs
+            .split_once(':')
+            .ok_or_else(|| format!("bad lhs {lhs:?}"))?;
         let t: usize = t.parse().map_err(|_| format!("bad thread {t:?}"))?;
-        let v: u32 = rhs.trim().parse().map_err(|_| format!("bad value {rhs:?}"))?;
+        let v: u32 = rhs
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad value {rhs:?}"))?;
         vals.insert((t, r.trim().to_lowercase()), v);
     }
     let mut out = Vec::new();
     for (t, regs) in reg_map.iter().enumerate() {
         let mut row = Vec::new();
         for hr in regs {
-            let v = vals.get(&(t, hr.to_lowercase())).ok_or_else(|| format!("herd state {line:?} lacks {t}:{hr}"))?;
+            let v = vals
+                .get(&(t, hr.to_lowercase()))
+                .ok_or_else(|| format!("herd state {line:?} lacks {t}:{hr}"))?;
             row.push(*v);
         }
         out.push(row);
@@ -763,24 +992,68 @@ mod tests {
             name: "SB".into(),
             locations: vec!["x".into(), "y".into()],
             threads: vec![
-                Thread { instrs: vec![Instr::Store { loc: 0, value: 1, ord: Ord::SeqCst }, Instr::Load { loc: 1, reg: 0, ord: Ord::SeqCst }] },
-                Thread { instrs: vec![Instr::Store { loc: 1, value: 1, ord: Ord::SeqCst }, Instr::Load { loc: 0, reg: 0, ord: Ord::SeqCst }] },
+                Thread {
+                    instrs: vec![
+                        Instr::Store {
+                            loc: 0,
+                            value: 1,
+                            ord: Ord::SeqCst,
+                        },
+                        Instr::Load {
+                            loc: 1,
+                            reg: 0,
+                            ord: Ord::SeqCst,
+                        },
+                    ],
+                },
+                Thread {
+                    instrs: vec![
+                        Instr::Store {
+                            loc: 1,
+                            value: 1,
+                            ord: Ord::SeqCst,
+                        },
+                        Instr::Load {
+                            loc: 0,
+                            reg: 0,
+                            ord: Ord::SeqCst,
+                        },
+                    ],
+                },
             ],
         }
     }
 
     fn cfg(target: &str) -> CompileConfig {
-        CompileConfig { toolchain: "stable".into(), target: target.into(), opt_level: "3".into(), extra_flags: vec![] }
+        CompileConfig {
+            toolchain: "stable".into(),
+            target: target.into(),
+            opt_level: "3".into(),
+            extra_flags: vec![],
+        }
     }
 
     #[test]
     fn lifts_x86_sb() {
         let t0 = "rl_thread_0:\n\tmovl\t$1, %eax\n\txchgl\t%eax, (%rdi)\n\tmovl\t64(%rdi), %eax\n\tmovl\t%eax, (%rsi)\n\tretq\n";
         let t1 = "rl_thread_1:\n\tmovl\t$1, %eax\n\txchgl\t%eax, 64(%rdi)\n\tmovl\t(%rdi), %eax\n\tmovl\t%eax, (%rsi)\n\tretq\n";
-        let l = lift(&sb(), &cfg("x86_64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
-        assert!(l.litmus_text.contains("xchgl %eax,(x)"), "{}", l.litmus_text);
+        let l = lift(
+            &sb(),
+            &cfg("x86_64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t1.into())],
+        )
+        .unwrap();
+        assert!(
+            l.litmus_text.contains("xchgl %eax,(x)"),
+            "{}",
+            l.litmus_text
+        );
         assert!(l.litmus_text.contains("movl (y),%eax"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("locations [0:r8; 1:r8;]"), "{}", l.litmus_text);
+        assert!(
+            l.litmus_text.contains("locations [0:r8; 1:r8;]"),
+            "{}",
+            l.litmus_text
+        );
         assert_eq!(l.reg_map, vec![vec!["r8"], vec!["r8"]]);
         let o = decode_state("0:r8=0; 1:r8=1;", &l.reg_map).unwrap();
         assert_eq!(o, Outcome(vec![vec![0], vec![1]]));
@@ -790,7 +1063,12 @@ mod tests {
     fn lifts_aarch64_sb_with_offset_addressing() {
         let t0 = "rl_thread_0:\n\tmov\tw8, #1\n\tadd\tx9, x0, #64\n\tstlr\tw8, [x0]\n\tldar\tw8, [x9]\n\tstr\tw8, [x1]\n\tret\n";
         let t1 = "rl_thread_1:\n\tmov\tw8, #1\n\tstlr\tw8, [x0, #64]\n\tldar\tw8, [x0]\n\tstr\tw8, [x1]\n\tret\n";
-        let l = lift(&sb(), &cfg("aarch64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
+        let l = lift(
+            &sb(),
+            &cfg("aarch64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t1.into())],
+        )
+        .unwrap();
         assert!(l.litmus_text.contains("0:X20=x;"), "{}", l.litmus_text);
         assert!(l.litmus_text.contains("0:X21=y;"), "{}", l.litmus_text);
         assert!(l.litmus_text.contains("1:X21=y;"), "{}", l.litmus_text);
@@ -798,8 +1076,16 @@ mod tests {
         assert!(l.litmus_text.contains("LDAR W8, [X21]"));
         assert!(l.litmus_text.contains("STLR W8, [X21]"));
         // Compiler registers are never used as herd pointer operands.
-        assert!(!l.litmus_text.contains("[X0]") && !l.litmus_text.contains("[X9]"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("locations [0:X24; 1:X24;]"), "{}", l.litmus_text);
+        assert!(
+            !l.litmus_text.contains("[X0]") && !l.litmus_text.contains("[X9]"),
+            "{}",
+            l.litmus_text
+        );
+        assert!(
+            l.litmus_text.contains("locations [0:X24; 1:X24;]"),
+            "{}",
+            l.litmus_text
+        );
     }
 
     /// Regression: rustc used `w8` for the store value and then `x8` as the pointer to `y`
@@ -809,24 +1095,51 @@ mod tests {
     fn data_register_later_reused_as_pointer() {
         let t0 = "rl_thread_0:\n\tmov\tw8, #1\n\tstr\tw8, [x0]\n\tadd\tx8, x0, #64\n\tldar\tw8, [x8]\n\tstr\tw8, [x1]\n\tret\n";
         let t1 = "rl_thread_1:\n\tmov\tw8, #1\n\tadd\tx9, x0, #64\n\tstlr\tw8, [x9]\n\tldar\tw8, [x0]\n\tstr\tw8, [x1]\n\tret\n";
-        let l = lift(&sb(), &cfg("aarch64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
-        assert!(l.litmus_text.contains("MOV W8, #1 | MOV W8, #1"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("STR W8, [X20] | STLR W8, [X21]"), "{}", l.litmus_text);
-        assert!(l.litmus_text.contains("LDAR W8, [X21] | LDAR W8, [X20]"), "{}", l.litmus_text);
+        let l = lift(
+            &sb(),
+            &cfg("aarch64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t1.into())],
+        )
+        .unwrap();
+        assert!(
+            l.litmus_text.contains("MOV W8, #1 | MOV W8, #1"),
+            "{}",
+            l.litmus_text
+        );
+        assert!(
+            l.litmus_text.contains("STR W8, [X20] | STLR W8, [X21]"),
+            "{}",
+            l.litmus_text
+        );
+        assert!(
+            l.litmus_text.contains("LDAR W8, [X21] | LDAR W8, [X20]"),
+            "{}",
+            l.litmus_text
+        );
         assert!(!l.litmus_text.contains("0:X8="), "{}", l.litmus_text);
     }
 
     #[test]
     fn rejects_outline_atomics_call() {
         let t0 = "rl_thread_0:\n\tbl\t__aarch64_cas4_acq_rel\n\tret\n";
-        let e = lift(&sb(), &cfg("aarch64-unknown-linux-gnu"), &[Some(t0.into()), Some(t0.into())]).unwrap_err();
+        let e = lift(
+            &sb(),
+            &cfg("aarch64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t0.into())],
+        )
+        .unwrap_err();
         assert!(matches!(e, LiftError::Unsupported { .. }));
     }
 
     #[test]
     fn rejects_missing_writeback() {
         let t0 = "rl_thread_0:\n\tmovl\t$1, %eax\n\txchgl\t%eax, (%rdi)\n\tretq\n";
-        assert!(lift(&sb(), &cfg("x86_64-unknown-linux-gnu"), &[Some(t0.into()), Some(t0.into())]).is_err());
+        assert!(lift(
+            &sb(),
+            &cfg("x86_64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t0.into())]
+        )
+        .is_err());
     }
 
     #[test]
@@ -835,11 +1148,27 @@ mod tests {
         let l = Litmus {
             name: "t".into(),
             locations: vec!["x".into(), "y".into()],
-            threads: vec![Thread { instrs: vec![Instr::Rmw { loc: 1, reg: 0, value: 1, ord: Ord::SeqCst, kind: RmwKind::FetchAdd }] }],
+            threads: vec![Thread {
+                instrs: vec![Instr::Rmw {
+                    loc: 1,
+                    reg: 0,
+                    value: 1,
+                    ord: Ord::SeqCst,
+                    kind: RmwKind::FetchAdd,
+                }],
+            }],
         };
         let out = lift(&l, &cfg("x86_64-unknown-linux-gnu"), &[Some(t.into())]).unwrap();
-        assert!(out.litmus_text.contains("lock xaddl %eax,(y)"), "{}", out.litmus_text);
-        assert!(out.litmus_text.contains("lock incl (x)"), "{}", out.litmus_text);
+        assert!(
+            out.litmus_text.contains("lock xaddl %eax,(y)"),
+            "{}",
+            out.litmus_text
+        );
+        assert!(
+            out.litmus_text.contains("lock incl (x)"),
+            "{}",
+            out.litmus_text
+        );
         assert!(out.litmus_text.contains("mfence"), "{}", out.litmus_text);
     }
 
@@ -853,20 +1182,66 @@ mod tests {
             name: "MP".into(),
             locations: vec!["x".into(), "y".into()],
             threads: vec![
-                Thread { instrs: vec![Instr::Store { loc: 0, value: 1, ord: Ord::Relaxed }, Instr::Store { loc: 1, value: 1, ord: Ord::Relaxed }] },
-                Thread { instrs: vec![Instr::Load { loc: 1, reg: 0, ord: Ord::Relaxed }, Instr::Load { loc: 0, reg: 1, ord: Ord::Relaxed }] },
+                Thread {
+                    instrs: vec![
+                        Instr::Store {
+                            loc: 0,
+                            value: 1,
+                            ord: Ord::Relaxed,
+                        },
+                        Instr::Store {
+                            loc: 1,
+                            value: 1,
+                            ord: Ord::Relaxed,
+                        },
+                    ],
+                },
+                Thread {
+                    instrs: vec![
+                        Instr::Load {
+                            loc: 1,
+                            reg: 0,
+                            ord: Ord::Relaxed,
+                        },
+                        Instr::Load {
+                            loc: 0,
+                            reg: 1,
+                            ord: Ord::Relaxed,
+                        },
+                    ],
+                },
             ],
         };
-        let l = lift(&mp, &cfg("x86_64-unknown-linux-gnu"), &[Some(t0.into()), Some(t1.into())]).unwrap();
-        assert_eq!(l.reg_map, vec![Vec::<String>::new(), vec!["r8".into(), "r9".into()]]);
-        assert!(l.litmus_text.contains("locations [1:r8; 1:r9;]"), "{}", l.litmus_text);
+        let l = lift(
+            &mp,
+            &cfg("x86_64-unknown-linux-gnu"),
+            &[Some(t0.into()), Some(t1.into())],
+        )
+        .unwrap();
+        assert_eq!(
+            l.reg_map,
+            vec![Vec::<String>::new(), vec!["r8".into(), "r9".into()]]
+        );
+        assert!(
+            l.litmus_text.contains("locations [1:r8; 1:r9;]"),
+            "{}",
+            l.litmus_text
+        );
         let o = decode_state("1:r8=1; 1:r9=0;", &l.reg_map).unwrap();
         assert_eq!(o, Outcome(vec![vec![], vec![1, 0]]));
         // AArch64 counterpart.
         let a1 = "rl_thread_1:\n\tldr\tw8, [x0, #64]\n\tstr\tw8, [x1]\n\tldr\tw8, [x0]\n\tstr\tw8, [x1, #4]\n\tret\n";
         let a0 = "rl_thread_0:\n\tmov\tw8, #1\n\tstr\tw8, [x0]\n\tstr\tw8, [x0, #64]\n\tret\n";
-        let l = lift(&mp, &cfg("aarch64-unknown-linux-gnu"), &[Some(a0.into()), Some(a1.into())]).unwrap();
-        assert_eq!(l.reg_map, vec![Vec::<String>::new(), vec!["X24".into(), "X25".into()]]);
+        let l = lift(
+            &mp,
+            &cfg("aarch64-unknown-linux-gnu"),
+            &[Some(a0.into()), Some(a1.into())],
+        )
+        .unwrap();
+        assert_eq!(
+            l.reg_map,
+            vec![Vec::<String>::new(), vec!["X24".into(), "X25".into()]]
+        );
     }
 
     #[test]
@@ -875,10 +1250,29 @@ mod tests {
         let l = Litmus {
             name: "t".into(),
             locations: vec!["x".into()],
-            threads: vec![Thread { instrs: vec![Instr::Rmw { loc: 0, reg: 0, value: 1, ord: Ord::SeqCst, kind: RmwKind::CompareExchange { expected: 0, failure: Ord::SeqCst } }] }],
+            threads: vec![Thread {
+                instrs: vec![Instr::Rmw {
+                    loc: 0,
+                    reg: 0,
+                    value: 1,
+                    ord: Ord::SeqCst,
+                    kind: RmwKind::CompareExchange {
+                        expected: 0,
+                        failure: Ord::SeqCst,
+                    },
+                }],
+            }],
         };
         let out = lift(&l, &cfg("x86_64-unknown-linux-gnu"), &[Some(t.into())]).unwrap();
-        assert!(out.litmus_text.contains("lock cmpxchgl (x),%ecx"), "{}", out.litmus_text);
-        assert!(out.litmus_text.contains("movl $0,%eax"), "{}", out.litmus_text);
+        assert!(
+            out.litmus_text.contains("lock cmpxchgl (x),%ecx"),
+            "{}",
+            out.litmus_text
+        );
+        assert!(
+            out.litmus_text.contains("movl $0,%eax"),
+            "{}",
+            out.litmus_text
+        );
     }
 }

@@ -26,7 +26,13 @@ pub enum Ord {
 }
 
 impl Ord {
-    pub const ALL: [Ord; 5] = [Ord::Relaxed, Ord::Acquire, Ord::Release, Ord::AcqRel, Ord::SeqCst];
+    pub const ALL: [Ord; 5] = [
+        Ord::Relaxed,
+        Ord::Acquire,
+        Ord::Release,
+        Ord::AcqRel,
+        Ord::SeqCst,
+    ];
 
     pub fn rust(self) -> &'static str {
         match self {
@@ -97,16 +103,34 @@ pub enum RmwKind {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Instr {
-    Store { loc: usize, value: u32, ord: Ord },
-    Load { loc: usize, reg: usize, ord: Ord },
-    Rmw { loc: usize, reg: usize, value: u32, ord: Ord, kind: RmwKind },
-    Fence { ord: Ord },
+    Store {
+        loc: usize,
+        value: u32,
+        ord: Ord,
+    },
+    Load {
+        loc: usize,
+        reg: usize,
+        ord: Ord,
+    },
+    Rmw {
+        loc: usize,
+        reg: usize,
+        value: u32,
+        ord: Ord,
+        kind: RmwKind,
+    },
+    Fence {
+        ord: Ord,
+    },
 }
 
 impl Instr {
     pub fn loc(&self) -> Option<usize> {
         match self {
-            Instr::Store { loc, .. } | Instr::Load { loc, .. } | Instr::Rmw { loc, .. } => Some(*loc),
+            Instr::Store { loc, .. } | Instr::Load { loc, .. } | Instr::Rmw { loc, .. } => {
+                Some(*loc)
+            }
             Instr::Fence { .. } => None,
         }
     }
@@ -128,7 +152,12 @@ pub struct Thread {
 
 impl Thread {
     pub fn num_regs(&self) -> usize {
-        self.instrs.iter().filter_map(Instr::reg).map(|r| r + 1).max().unwrap_or(0)
+        self.instrs
+            .iter()
+            .filter_map(Instr::reg)
+            .map(|r| r + 1)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -178,7 +207,10 @@ pub struct OutcomeSet {
 
 impl OutcomeSet {
     pub fn from_counts(counts: &BTreeMap<Outcome, u64>, exhaustive: bool) -> Self {
-        OutcomeSet { outcomes: counts.keys().cloned().collect(), exhaustive }
+        OutcomeSet {
+            outcomes: counts.keys().cloned().collect(),
+            exhaustive,
+        }
     }
     pub fn contains(&self, o: &Outcome) -> bool {
         self.outcomes.contains(o)
@@ -199,11 +231,19 @@ pub mod counts_serde {
     }
 
     pub fn serialize<S: Serializer>(m: &BTreeMap<Outcome, u64>, s: S) -> Result<S::Ok, S::Error> {
-        let v: Vec<Rec> = m.iter().map(|(o, c)| Rec { outcome: o.clone(), count: *c }).collect();
+        let v: Vec<Rec> = m
+            .iter()
+            .map(|(o, c)| Rec {
+                outcome: o.clone(),
+                count: *c,
+            })
+            .collect();
         v.serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<Outcome, u64>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<Outcome, u64>, D::Error> {
         let v: Vec<Rec> = Vec::deserialize(d)?;
         Ok(v.into_iter().map(|r| (r.outcome, r.count)).collect())
     }
@@ -233,18 +273,27 @@ impl Litmus {
                 }
                 match ins {
                     Instr::Store { ord, .. } if !ord.valid_for_store() => {
-                        return Err(format!("thread {t} instr {i}: invalid store ordering {ord:?}"))
+                        return Err(format!(
+                            "thread {t} instr {i}: invalid store ordering {ord:?}"
+                        ))
                     }
                     Instr::Load { ord, .. } if !ord.valid_for_load() => {
-                        return Err(format!("thread {t} instr {i}: invalid load ordering {ord:?}"))
+                        return Err(format!(
+                            "thread {t} instr {i}: invalid load ordering {ord:?}"
+                        ))
                     }
                     Instr::Fence { ord } if !ord.valid_for_fence() => {
-                        return Err(format!("thread {t} instr {i}: invalid fence ordering {ord:?}"))
+                        return Err(format!(
+                            "thread {t} instr {i}: invalid fence ordering {ord:?}"
+                        ))
                     }
-                    Instr::Rmw { kind: RmwKind::CompareExchange { failure, .. }, .. }
-                        if !failure.valid_for_cas_failure() =>
-                    {
-                        return Err(format!("thread {t} instr {i}: invalid CAS failure ordering {failure:?}"))
+                    Instr::Rmw {
+                        kind: RmwKind::CompareExchange { failure, .. },
+                        ..
+                    } if !failure.valid_for_cas_failure() => {
+                        return Err(format!(
+                            "thread {t} instr {i}: invalid CAS failure ordering {failure:?}"
+                        ))
                     }
                     _ => {}
                 }
@@ -292,14 +341,30 @@ mod tests {
             threads: vec![
                 Thread {
                     instrs: vec![
-                        Instr::Store { loc: 0, value: 1, ord: Ord::Relaxed },
-                        Instr::Load { loc: 1, reg: 0, ord: Ord::Relaxed },
+                        Instr::Store {
+                            loc: 0,
+                            value: 1,
+                            ord: Ord::Relaxed,
+                        },
+                        Instr::Load {
+                            loc: 1,
+                            reg: 0,
+                            ord: Ord::Relaxed,
+                        },
                     ],
                 },
                 Thread {
                     instrs: vec![
-                        Instr::Store { loc: 1, value: 1, ord: Ord::Relaxed },
-                        Instr::Load { loc: 0, reg: 0, ord: Ord::Relaxed },
+                        Instr::Store {
+                            loc: 1,
+                            value: 1,
+                            ord: Ord::Relaxed,
+                        },
+                        Instr::Load {
+                            loc: 0,
+                            reg: 0,
+                            ord: Ord::Relaxed,
+                        },
                     ],
                 },
             ],
@@ -314,10 +379,18 @@ mod tests {
     #[test]
     fn rejects_bad_orderings() {
         let mut l = sb();
-        l.threads[0].instrs[0] = Instr::Store { loc: 0, value: 1, ord: Ord::Acquire };
+        l.threads[0].instrs[0] = Instr::Store {
+            loc: 0,
+            value: 1,
+            ord: Ord::Acquire,
+        };
         assert!(l.validate().is_err());
         let mut l = sb();
-        l.threads[0].instrs[1] = Instr::Load { loc: 1, reg: 0, ord: Ord::Release };
+        l.threads[0].instrs[1] = Instr::Load {
+            loc: 1,
+            reg: 0,
+            ord: Ord::Release,
+        };
         assert!(l.validate().is_err());
         let mut l = sb();
         l.threads[0].instrs.push(Instr::Fence { ord: Ord::Relaxed });
@@ -327,7 +400,11 @@ mod tests {
     #[test]
     fn rejects_sparse_registers() {
         let mut l = sb();
-        l.threads[0].instrs[1] = Instr::Load { loc: 1, reg: 1, ord: Ord::Relaxed };
+        l.threads[0].instrs[1] = Instr::Load {
+            loc: 1,
+            reg: 1,
+            ord: Ord::Relaxed,
+        };
         assert!(l.validate().is_err());
     }
 
@@ -337,7 +414,11 @@ mod tests {
         let b = sb().digest();
         assert_eq!(a, b);
         let mut l = sb();
-        l.threads[0].instrs[0] = Instr::Store { loc: 0, value: 1, ord: Ord::SeqCst };
+        l.threads[0].instrs[0] = Instr::Store {
+            loc: 0,
+            value: 1,
+            ord: Ord::SeqCst,
+        };
         assert_ne!(a, l.digest());
     }
 

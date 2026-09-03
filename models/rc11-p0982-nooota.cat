@@ -39,6 +39,6 @@ irreflexive hb; eco? as coherence1
 irreflexive (myrmw; eco) as coherencermw
 empty (myrmw & (rb; mo)) as atomicity
 acyclic psc as SC
-(* no-thin-air axiom REMOVED by rustlitmus: C++20 has no formal OOTA prohibition; hardware (AArch64, POWER, RISC-V) exhibits load buffering. *)
+(* Diagnostic variant only: the no-thin-air axiom is removed. This is not a Rust, C++20, or hardware model and must not be used to predict permitted behavior. *)
 
 show hb, eco, psc, rmw

@@ -37,14 +37,19 @@ pub struct RunOutput {
 
 #[derive(Debug)]
 pub enum RunError {
-    Spawn { program: PathBuf, source: std::io::Error },
+    Spawn {
+        program: PathBuf,
+        source: std::io::Error,
+    },
     Wait(std::io::Error),
 }
 
 impl std::fmt::Display for RunError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RunError::Spawn { program, source } => write!(f, "failed to spawn {}: {source}", program.display()),
+            RunError::Spawn { program, source } => {
+                write!(f, "failed to spawn {}: {source}", program.display())
+            }
             RunError::Wait(e) => write!(f, "failed waiting for child: {e}"),
         }
     }
@@ -54,7 +59,17 @@ impl std::error::Error for RunError {}
 /// Environment variables forwarded to children. Deliberately small: toolchain
 /// discovery plus locale. Anything that could carry a credential (tokens, `*_KEY`,
 /// `*_SECRET`, cloud config) is never forwarded.
-pub const ENV_ALLOWLIST: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "RUSTUP_HOME", "CARGO_HOME", "OPAMROOT", "LD_LIBRARY_PATH"];
+pub const ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "RUSTUP_HOME",
+    "CARGO_HOME",
+    "OPAMROOT",
+    "LD_LIBRARY_PATH",
+];
 
 impl RunSpec {
     pub fn new<I, S>(program: impl AsRef<Path>, args: I) -> Self
@@ -101,7 +116,10 @@ impl RunSpec {
     }
 }
 
-fn drain(mut r: impl Read + Send + 'static, cap: usize) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
+fn drain(
+    mut r: impl Read + Send + 'static,
+    cap: usize,
+) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -129,7 +147,12 @@ fn drain(mut r: impl Read + Send + 'static, cap: usize) -> std::thread::JoinHand
 
 pub fn run(spec: &RunSpec) -> Result<RunOutput, RunError> {
     let mut cmd = Command::new(&spec.program);
-    cmd.args(&spec.args).env_clear().envs(&spec.env).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(&spec.args)
+        .env_clear()
+        .envs(&spec.env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(d) = &spec.cwd {
         cmd.current_dir(d);
     }
@@ -141,7 +164,10 @@ pub fn run(spec: &RunSpec) -> Result<RunOutput, RunError> {
         cmd.process_group(0);
     }
     let start = Instant::now();
-    let mut child = cmd.spawn().map_err(|e| RunError::Spawn { program: spec.program.clone(), source: e })?;
+    let mut child = cmd.spawn().map_err(|e| RunError::Spawn {
+        program: spec.program.clone(),
+        source: e,
+    })?;
     let out = drain(child.stdout.take().expect("piped"), spec.max_output);
     let err = drain(child.stderr.take().expect("piped"), spec.max_output);
     let mut timed_out = false;
@@ -193,7 +219,9 @@ pub fn which(name: &str) -> Option<PathBuf> {
         return p.is_file().then(|| p.to_path_buf());
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|c| c.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|c| c.is_file())
 }
 
 #[cfg(test)]
@@ -202,7 +230,11 @@ mod tests {
 
     #[test]
     fn runs_and_captures() {
-        let o = run(&RunSpec::new("/bin/sh", ["-c", "echo out; echo err 1>&2; exit 3"])).unwrap();
+        let o = run(&RunSpec::new(
+            "/bin/sh",
+            ["-c", "echo out; echo err 1>&2; exit 3"],
+        ))
+        .unwrap();
         assert_eq!(o.exit_code, Some(3));
         assert_eq!(o.stdout, "out\n");
         assert_eq!(o.stderr, "err\n");
@@ -211,7 +243,9 @@ mod tests {
 
     #[test]
     fn enforces_timeout() {
-        let o = run(&RunSpec::new("/bin/sh", ["-c", "sleep 30"]).timeout(Duration::from_millis(200))).unwrap();
+        let o =
+            run(&RunSpec::new("/bin/sh", ["-c", "sleep 30"]).timeout(Duration::from_millis(200)))
+                .unwrap();
         assert!(o.timed_out);
         assert!(o.exit_code.is_none());
         assert!(o.wall < Duration::from_secs(5));
@@ -219,7 +253,11 @@ mod tests {
 
     #[test]
     fn truncates_output() {
-        let o = run(&RunSpec::new("/bin/sh", ["-c", "head -c 100000 /dev/zero | tr '\\0' 'a'"]).max_output(1000)).unwrap();
+        let o = run(
+            &RunSpec::new("/bin/sh", ["-c", "head -c 100000 /dev/zero | tr '\\0' 'a'"])
+                .max_output(1000),
+        )
+        .unwrap();
         assert!(o.truncated);
         assert_eq!(o.stdout.len(), 1000);
     }
@@ -234,6 +272,10 @@ mod tests {
 
     #[test]
     fn spawn_error_is_reported() {
-        assert!(run(&RunSpec::new("/nonexistent/binary/xyz", Vec::<String>::new())).is_err());
+        assert!(run(&RunSpec::new(
+            "/nonexistent/binary/xyz",
+            Vec::<String>::new()
+        ))
+        .is_err());
     }
 }

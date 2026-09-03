@@ -85,7 +85,10 @@ impl Family {
     }
 
     pub fn from_name(s: &str) -> Option<Family> {
-        Family::ALL.iter().copied().find(|f| f.name().eq_ignore_ascii_case(s))
+        Family::ALL
+            .iter()
+            .copied()
+            .find(|f| f.name().eq_ignore_ascii_case(s))
     }
 
     /// Number of ordering slots this family exposes.
@@ -107,7 +110,13 @@ impl Family {
     pub fn slot_domain(self, i: usize) -> &'static [Ord] {
         const ST: &[Ord] = &[Ord::Relaxed, Ord::Release, Ord::SeqCst];
         const LD: &[Ord] = &[Ord::Relaxed, Ord::Acquire, Ord::SeqCst];
-        const RMW: &[Ord] = &[Ord::Relaxed, Ord::Acquire, Ord::Release, Ord::AcqRel, Ord::SeqCst];
+        const RMW: &[Ord] = &[
+            Ord::Relaxed,
+            Ord::Acquire,
+            Ord::Release,
+            Ord::AcqRel,
+            Ord::SeqCst,
+        ];
         const FENCE: &[Ord] = &[Ord::Acquire, Ord::Release, Ord::AcqRel, Ord::SeqCst];
         match (self, i) {
             (Family::SB, 0 | 2) | (Family::MP, 0 | 1) | (Family::LB, 1 | 3) => ST,
@@ -147,48 +156,178 @@ impl Family {
 
     /// Instantiate with concrete orderings (`ords.len() == slots()`).
     pub fn instantiate(self, ords: &[Ord]) -> Litmus {
-        assert_eq!(ords.len(), self.slots(), "wrong number of orderings for {}", self.name());
+        assert_eq!(
+            ords.len(),
+            self.slots(),
+            "wrong number of orderings for {}",
+            self.name()
+        );
         let o = |i: usize| ords[i];
         let st = |loc, value, ord| Instr::Store { loc, value, ord };
         let ld = |loc, reg, ord| Instr::Load { loc, reg, ord };
-        let xchg = |loc, reg, value, ord| Instr::Rmw { loc, reg, value, ord, kind: RmwKind::Swap };
+        let xchg = |loc, reg, value, ord| Instr::Rmw {
+            loc,
+            reg,
+            value,
+            ord,
+            kind: RmwKind::Swap,
+        };
         let fence = |ord| Instr::Fence { ord };
         let xy = || vec!["x".to_string(), "y".to_string()];
-        let name = format!("{}+{}", self.name(), ords.iter().map(|o| o.short()).collect::<Vec<_>>().join("-"));
+        let name = format!(
+            "{}+{}",
+            self.name(),
+            ords.iter().map(|o| o.short()).collect::<Vec<_>>().join("-")
+        );
         let threads = match self {
-            Family::SB => vec![Thread { instrs: vec![st(0, 1, o(0)), ld(1, 0, o(1))] }, Thread { instrs: vec![st(1, 1, o(2)), ld(0, 0, o(3))] }],
-            Family::MP => vec![Thread { instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))] }, Thread { instrs: vec![ld(1, 0, o(2)), ld(0, 1, o(3))] }],
-            Family::LB => vec![Thread { instrs: vec![ld(0, 0, o(0)), st(1, 1, o(1))] }, Thread { instrs: vec![ld(1, 0, o(2)), st(0, 1, o(3))] }],
+            Family::SB => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), ld(1, 0, o(1))],
+                },
+                Thread {
+                    instrs: vec![st(1, 1, o(2)), ld(0, 0, o(3))],
+                },
+            ],
+            Family::MP => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(2)), ld(0, 1, o(3))],
+                },
+            ],
+            Family::LB => vec![
+                Thread {
+                    instrs: vec![ld(0, 0, o(0)), st(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(2)), st(0, 1, o(3))],
+                },
+            ],
             Family::IRIW => vec![
-                Thread { instrs: vec![st(0, 1, o(0))] },
-                Thread { instrs: vec![st(1, 1, o(1))] },
-                Thread { instrs: vec![ld(0, 0, o(2)), ld(1, 1, o(3))] },
-                Thread { instrs: vec![ld(1, 0, o(4)), ld(0, 1, o(5))] },
+                Thread {
+                    instrs: vec![st(0, 1, o(0))],
+                },
+                Thread {
+                    instrs: vec![st(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![ld(0, 0, o(2)), ld(1, 1, o(3))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(4)), ld(0, 1, o(5))],
+                },
             ],
             Family::WRC => vec![
-                Thread { instrs: vec![st(0, 1, o(0))] },
-                Thread { instrs: vec![ld(0, 0, o(1)), st(1, 1, o(2))] },
-                Thread { instrs: vec![ld(1, 0, o(3)), ld(0, 1, o(4))] },
+                Thread {
+                    instrs: vec![st(0, 1, o(0))],
+                },
+                Thread {
+                    instrs: vec![ld(0, 0, o(1)), st(1, 1, o(2))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(3)), ld(0, 1, o(4))],
+                },
             ],
             Family::TwoPlusTwoW => vec![
-                Thread { instrs: vec![st(0, 1, o(0)), st(1, 2, o(1)), ld(0, 0, o(4))] },
-                Thread { instrs: vec![st(1, 1, o(2)), st(0, 2, o(3)), ld(1, 0, o(5))] },
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), st(1, 2, o(1)), ld(0, 0, o(4))],
+                },
+                Thread {
+                    instrs: vec![st(1, 1, o(2)), st(0, 2, o(3)), ld(1, 0, o(5))],
+                },
             ],
-            Family::SBRmw => vec![Thread { instrs: vec![xchg(0, 0, 1, o(0)), ld(1, 1, o(1))] }, Thread { instrs: vec![xchg(1, 0, 1, o(2)), ld(0, 1, o(3))] }],
-            Family::MPRmw => vec![Thread { instrs: vec![st(0, 1, o(0)), xchg(1, 0, 1, o(1))] }, Thread { instrs: vec![ld(1, 0, o(2)), ld(0, 1, o(3))] }],
-            Family::MPReleaseSeq => vec![Thread { instrs: vec![st(0, 1, o(0)), st(1, 1, o(1)), st(1, 2, o(2))] }, Thread { instrs: vec![ld(1, 0, o(3)), ld(0, 1, o(4))] }],
+            Family::SBRmw => vec![
+                Thread {
+                    instrs: vec![xchg(0, 0, 1, o(0)), ld(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![xchg(1, 0, 1, o(2)), ld(0, 1, o(3))],
+                },
+            ],
+            Family::MPRmw => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), xchg(1, 0, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(2)), ld(0, 1, o(3))],
+                },
+            ],
+            Family::MPReleaseSeq => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), st(1, 1, o(1)), st(1, 2, o(2))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(3)), ld(0, 1, o(4))],
+                },
+            ],
             Family::MPCasFail => vec![
-                Thread { instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))] },
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))],
+                },
                 // CAS expects 7 (never present) so it always fails and acts as a load with the failure ordering.
-                Thread { instrs: vec![Instr::Rmw { loc: 1, reg: 0, value: 9, ord: o(2), kind: RmwKind::CompareExchange { expected: 7, failure: o(3) } }, ld(0, 1, o(4))] },
+                Thread {
+                    instrs: vec![
+                        Instr::Rmw {
+                            loc: 1,
+                            reg: 0,
+                            value: 9,
+                            ord: o(2),
+                            kind: RmwKind::CompareExchange {
+                                expected: 7,
+                                failure: o(3),
+                            },
+                        },
+                        ld(0, 1, o(4)),
+                    ],
+                },
             ],
-            Family::SBFence => vec![Thread { instrs: vec![st(0, 1, o(0)), fence(o(1)), ld(1, 0, o(2))] }, Thread { instrs: vec![st(1, 1, o(3)), fence(o(4)), ld(0, 0, o(5))] }],
-            Family::MPFence => vec![Thread { instrs: vec![st(0, 1, o(0)), fence(o(1)), st(1, 1, o(2))] }, Thread { instrs: vec![ld(1, 0, o(3)), fence(o(4)), ld(0, 1, o(5))] }],
-            Family::LBFence => vec![Thread { instrs: vec![ld(0, 0, o(0)), fence(o(1)), st(1, 1, o(2))] }, Thread { instrs: vec![ld(1, 0, o(3)), fence(o(4)), st(0, 1, o(5))] }],
-            Family::R => vec![Thread { instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))] }, Thread { instrs: vec![st(1, 2, o(2)), ld(0, 0, o(3)), ld(1, 1, o(4))] }],
-            Family::S => vec![Thread { instrs: vec![st(0, 2, o(0)), st(1, 1, o(1))] }, Thread { instrs: vec![ld(1, 0, o(2)), st(0, 1, o(3)), ld(0, 1, o(4))] }],
+            Family::SBFence => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), fence(o(1)), ld(1, 0, o(2))],
+                },
+                Thread {
+                    instrs: vec![st(1, 1, o(3)), fence(o(4)), ld(0, 0, o(5))],
+                },
+            ],
+            Family::MPFence => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), fence(o(1)), st(1, 1, o(2))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(3)), fence(o(4)), ld(0, 1, o(5))],
+                },
+            ],
+            Family::LBFence => vec![
+                Thread {
+                    instrs: vec![ld(0, 0, o(0)), fence(o(1)), st(1, 1, o(2))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(3)), fence(o(4)), st(0, 1, o(5))],
+                },
+            ],
+            Family::R => vec![
+                Thread {
+                    instrs: vec![st(0, 1, o(0)), st(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![st(1, 2, o(2)), ld(0, 0, o(3)), ld(1, 1, o(4))],
+                },
+            ],
+            Family::S => vec![
+                Thread {
+                    instrs: vec![st(0, 2, o(0)), st(1, 1, o(1))],
+                },
+                Thread {
+                    instrs: vec![ld(1, 0, o(2)), st(0, 1, o(3)), ld(0, 1, o(4))],
+                },
+            ],
         };
-        Litmus { name, locations: xy(), threads }
+        Litmus {
+            name,
+            locations: xy(),
+            threads,
+        }
     }
 
     /// Enumerate every legal ordering assignment (cartesian product of slot domains).
@@ -224,20 +363,28 @@ impl Family {
             s ^= s << 17;
             s
         };
-        let ords: Vec<Ord> = (0..self.slots()).map(|i| {
-            let d = self.slot_domain(i);
-            d[(next() % d.len() as u64) as usize]
-        }).collect();
+        let ords: Vec<Ord> = (0..self.slots())
+            .map(|i| {
+                let d = self.slot_domain(i);
+                d[(next() % d.len() as u64) as usize]
+            })
+            .collect();
         self.instantiate(&ords)
     }
 }
 
 /// Parse `FAMILY+o1-o2-...` back into a litmus (inverse of `instantiate` naming).
 pub fn parse_case_name(name: &str) -> Option<Litmus> {
-    let (fam, ords) = name.split_once('+').map(|(f, o)| (f, Some(o))).unwrap_or((name, None));
+    let (fam, ords) = name
+        .split_once('+')
+        .map(|(f, o)| (f, Some(o)))
+        .unwrap_or((name, None));
     // Families with '+' in their own name (e.g. MP+rmw) need a second split attempt.
     for f in Family::ALL {
-        if let Some(rest) = name.strip_prefix(f.name()).and_then(|r| r.strip_prefix('+')) {
+        if let Some(rest) = name
+            .strip_prefix(f.name())
+            .and_then(|r| r.strip_prefix('+'))
+        {
             let ords: Option<Vec<Ord>> = rest.split('-').map(short_to_ord).collect();
             if let Some(ords) = ords {
                 if ords.len() == f.slots() {
@@ -299,6 +446,9 @@ mod tests {
 
     #[test]
     fn seeded_instances_are_deterministic() {
-        assert_eq!(Family::IRIW.instance_from_seed(7), Family::IRIW.instance_from_seed(7));
+        assert_eq!(
+            Family::IRIW.instance_from_seed(7),
+            Family::IRIW.instance_from_seed(7)
+        );
     }
 }

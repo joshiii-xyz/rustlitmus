@@ -78,13 +78,25 @@ fn base_args(cfg: &MiriConfig, source: &Path, out_dir: &Path, isolation: bool) -
     if !isolation {
         a.push("-Zmiri-disable-isolation".to_string());
     }
-    a.extend(["-Copt-level=0".to_string(), "--out-dir".to_string(), out_dir.display().to_string(), source.display().to_string()]);
+    a.extend([
+        "-Copt-level=0".to_string(),
+        "--out-dir".to_string(),
+        out_dir.display().to_string(),
+        source.display().to_string(),
+    ]);
     a.extend(cfg.extra_flags.iter().cloned());
     a
 }
 
 /// Run under weak-memory emulation for each seed.
-pub fn run_weak_memory(cfg: &MiriConfig, source: &Path, out_dir: &Path, seeds: &[u64], iters: usize, timeout: Duration) -> MiriResult {
+pub fn run_weak_memory(
+    cfg: &MiriConfig,
+    source: &Path,
+    out_dir: &Path,
+    seeds: &[u64],
+    iters: usize,
+    timeout: Duration,
+) -> MiriResult {
     std::fs::create_dir_all(out_dir).ok();
     let version = miri_version(cfg);
     let mut runs = Vec::new();
@@ -95,7 +107,9 @@ pub fn run_weak_memory(cfg: &MiriConfig, source: &Path, out_dir: &Path, seeds: &
         args.extend(base_args(cfg, source, out_dir, false));
         args.push("--".into());
         args.push(iters.to_string());
-        let spec = RunSpec::new(&cfg.driver, args.iter().map(String::as_str)).timeout(timeout).cwd(out_dir);
+        let spec = RunSpec::new(&cfg.driver, args.iter().map(String::as_str))
+            .timeout(timeout)
+            .cwd(out_dir);
         let command = spec.command_line();
         match run(&spec) {
             Ok(o) => {
@@ -118,15 +132,38 @@ pub fn run_weak_memory(cfg: &MiriConfig, source: &Path, out_dir: &Path, seeds: &
                     error = Some("timed out".into());
                     warnings.push(format!("seed {seed}: timed out after {:?}", timeout));
                 } else {
-                    let msg = o.stderr.lines().find(|l| l.contains("error")).unwrap_or("non-zero exit").to_string();
+                    let msg = o
+                        .stderr
+                        .lines()
+                        .find(|l| l.contains("error"))
+                        .unwrap_or("non-zero exit")
+                        .to_string();
                     warnings.push(format!("seed {seed}: {msg}"));
                     error = Some(msg);
                 }
-                runs.push(MiriRun { seed: Some(seed), command, exit_code: o.exit_code, timed_out: o.timed_out, stdout_excerpt: excerpt(&o.stdout, 4000), stderr_excerpt: excerpt(&o.stderr, 4000), counts: c, error });
+                runs.push(MiriRun {
+                    seed: Some(seed),
+                    command,
+                    exit_code: o.exit_code,
+                    timed_out: o.timed_out,
+                    stdout_excerpt: excerpt(&o.stdout, 4000),
+                    stderr_excerpt: excerpt(&o.stderr, 4000),
+                    counts: c,
+                    error,
+                });
             }
             Err(e) => {
                 warnings.push(format!("seed {seed}: {e}"));
-                runs.push(MiriRun { seed: Some(seed), command, exit_code: None, timed_out: false, stdout_excerpt: String::new(), stderr_excerpt: e.to_string(), counts: BTreeMap::new(), error: Some(e.to_string()) });
+                runs.push(MiriRun {
+                    seed: Some(seed),
+                    command,
+                    exit_code: None,
+                    timed_out: false,
+                    stdout_excerpt: String::new(),
+                    stderr_excerpt: e.to_string(),
+                    counts: BTreeMap::new(),
+                    error: Some(e.to_string()),
+                });
             }
         }
     }
@@ -152,11 +189,17 @@ pub fn run_weak_memory(cfg: &MiriConfig, source: &Path, out_dir: &Path, seeds: &
 pub fn run_genmc(cfg: &MiriConfig, source: &Path, out_dir: &Path, timeout: Duration) -> MiriResult {
     std::fs::create_dir_all(out_dir).ok();
     let version = miri_version(cfg);
-    let mut args = vec!["-Zmiri-genmc".to_string(), "-Zmiri-disable-stacked-borrows".to_string(), "-Zmiri-genmc-verbose".to_string()];
+    let mut args = vec![
+        "-Zmiri-genmc".to_string(),
+        "-Zmiri-disable-stacked-borrows".to_string(),
+        "-Zmiri-genmc-verbose".to_string(),
+    ];
     args.extend(base_args(cfg, source, out_dir, true));
     args.push("--".into());
     args.push("1".into());
-    let spec = RunSpec::new(&cfg.driver, args.iter().map(String::as_str)).timeout(timeout).cwd(out_dir);
+    let spec = RunSpec::new(&cfg.driver, args.iter().map(String::as_str))
+        .timeout(timeout)
+        .cwd(out_dir);
     let command = spec.command_line();
     let mut warnings = Vec::new();
     let mut counts: BTreeMap<Outcome, u64> = BTreeMap::new();
@@ -171,13 +214,23 @@ pub fn run_genmc(cfg: &MiriConfig, source: &Path, out_dir: &Path, timeout: Durat
                 error = Some("timed out".into());
                 warnings.push(format!("genmc: timed out after {timeout:?}"));
             } else if o.exit_code != Some(0) {
-                let msg = o.stderr.lines().find(|l| l.contains("error")).unwrap_or("non-zero exit").to_string();
+                let msg = o
+                    .stderr
+                    .lines()
+                    .find(|l| l.contains("error"))
+                    .unwrap_or("non-zero exit")
+                    .to_string();
                 error = Some(msg.clone());
                 warnings.push(format!("genmc: {msg}"));
             }
             // GenMC prints the program's stdout once per explored execution; the histogram
             // lines therefore accumulate across executions.
-            let hist_lines: String = o.stdout.lines().filter(|l| l.contains('\t')).map(|l| format!("{l}\n")).collect();
+            let hist_lines: String = o
+                .stdout
+                .lines()
+                .filter(|l| l.contains('\t'))
+                .map(|l| format!("{l}\n"))
+                .collect();
             for l in o.stdout.lines().chain(o.stderr.lines()) {
                 if let Some(rest) = l.strip_prefix("Verification complete with ") {
                     explored = rest.split_whitespace().next().and_then(|n| n.parse().ok());
@@ -195,11 +248,29 @@ pub fn run_genmc(cfg: &MiriConfig, source: &Path, out_dir: &Path, timeout: Durat
                     }
                 }
             }
-            MiriRun { seed: None, command, exit_code: o.exit_code, timed_out: o.timed_out, stdout_excerpt: excerpt(&o.stdout, 4000), stderr_excerpt: excerpt(&o.stderr, 4000), counts: counts.clone(), error }
+            MiriRun {
+                seed: None,
+                command,
+                exit_code: o.exit_code,
+                timed_out: o.timed_out,
+                stdout_excerpt: excerpt(&o.stdout, 4000),
+                stderr_excerpt: excerpt(&o.stderr, 4000),
+                counts: counts.clone(),
+                error,
+            }
         }
         Err(e) => {
             warnings.push(format!("genmc: {e}"));
-            MiriRun { seed: None, command, exit_code: None, timed_out: false, stdout_excerpt: String::new(), stderr_excerpt: e.to_string(), counts: BTreeMap::new(), error: Some(e.to_string()) }
+            MiriRun {
+                seed: None,
+                command,
+                exit_code: None,
+                timed_out: false,
+                stdout_excerpt: String::new(),
+                stderr_excerpt: e.to_string(),
+                counts: BTreeMap::new(),
+                error: Some(e.to_string()),
+            }
         }
     };
     let ok = run_rec.error.is_none();

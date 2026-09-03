@@ -30,13 +30,27 @@ pub struct HostInfo {
 pub fn host_info() -> HostInfo {
     let read = |p: &str| std::fs::read_to_string(p).ok();
     let cpuinfo = read("/proc/cpuinfo").unwrap_or_default();
-    let field = |key: &str| cpuinfo.lines().find(|l| l.starts_with(key)).and_then(|l| l.split_once(':')).map(|(_, v)| v.trim().to_string());
+    let field = |key: &str| {
+        cpuinfo
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_once(':'))
+            .map(|(_, v)| v.trim().to_string())
+    };
     let flags = field("flags").or_else(|| field("Features"));
-    let hypervisor = flags.as_deref().and_then(|f| f.split_whitespace().any(|x| x == "hypervisor").then(|| "cpuid hypervisor bit set".to_string()));
+    let hypervisor = flags.as_deref().and_then(|f| {
+        f.split_whitespace()
+            .any(|x| x == "hypervisor")
+            .then(|| "cpuid hypervisor bit set".to_string())
+    });
     let kernel = read("/proc/version").map(|v| v.trim().to_string());
     let container_hint = read("/proc/1/cgroup").and_then(|c| {
         let l = c.lines().next()?.to_string();
-        (l.contains("docker") || l.contains("containerd") || l.contains("/ta-") || l.contains("kubepods")).then_some(l)
+        (l.contains("docker")
+            || l.contains("containerd")
+            || l.contains("/ta-")
+            || l.contains("kubepods"))
+        .then_some(l)
     });
     HostInfo {
         arch: std::env::consts::ARCH.into(),
@@ -45,7 +59,22 @@ pub fn host_info() -> HostInfo {
         cpu_model: field("model name"),
         cpu_vendor: field("vendor_id").or_else(|| field("CPU implementer")),
         cpu_flags_excerpt: flags.map(|f| {
-            let keep: Vec<&str> = f.split_whitespace().filter(|x| ["sse2", "avx", "avx2", "avx512f", "hypervisor", "lse", "atomics", "rcpc"].contains(x)).collect();
+            let keep: Vec<&str> = f
+                .split_whitespace()
+                .filter(|x| {
+                    [
+                        "sse2",
+                        "avx",
+                        "avx2",
+                        "avx512f",
+                        "hypervisor",
+                        "lse",
+                        "atomics",
+                        "rcpc",
+                    ]
+                    .contains(x)
+                })
+                .collect();
             keep.join(" ")
         }),
         cpus_online: std::thread::available_parallelism().ok().map(|n| n.get()),
@@ -88,7 +117,13 @@ fn emulator_sysroot(emulator: &Path) -> Option<String> {
     Path::new(&p).is_dir().then_some(p)
 }
 
-pub fn run_binary(binary: &Path, emulator: Option<&Path>, batches: usize, iters_per_batch: usize, timeout: Duration) -> HardwareResult {
+pub fn run_binary(
+    binary: &Path,
+    emulator: Option<&Path>,
+    batches: usize,
+    iters_per_batch: usize,
+    timeout: Duration,
+) -> HardwareResult {
     let binary_sha256 = std::fs::read(binary).ok().map(|b| {
         use sha2::{Digest, Sha256};
         hex::encode(Sha256::digest(b))
@@ -135,7 +170,11 @@ pub fn run_binary(binary: &Path, emulator: Option<&Path>, batches: usize, iters_
             }
             Ok(o) => {
                 abnormal += 1;
-                warnings.push(format!("batch {b}: exit {:?}: {}", o.exit_code, o.stderr.lines().last().unwrap_or("").trim()));
+                warnings.push(format!(
+                    "batch {b}: exit {:?}: {}",
+                    o.exit_code,
+                    o.stderr.lines().last().unwrap_or("").trim()
+                ));
             }
             Err(e) => {
                 abnormal += 1;

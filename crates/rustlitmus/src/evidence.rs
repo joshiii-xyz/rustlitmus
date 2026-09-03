@@ -34,10 +34,16 @@ pub struct Tagged<T> {
 
 impl<T> Tagged<T> {
     pub fn observed(v: T) -> Self {
-        Tagged { status: Status::Observed, value: v }
+        Tagged {
+            status: Status::Observed,
+            value: v,
+        }
     }
     pub fn predicted(v: T) -> Self {
-        Tagged { status: Status::Predicted, value: v }
+        Tagged {
+            status: Status::Predicted,
+            value: v,
+        }
     }
 }
 
@@ -77,21 +83,44 @@ pub enum Classification {
     Consistent,
     /// A sampled/observed outcome is absent from an exhaustive prediction. This is the
     /// strongest signal: something observed that a model forbids.
-    ObservedOutsidePrediction { layer_pred: Layer, layer_obs: Layer, outcomes: Vec<Outcome> },
+    ObservedOutsidePrediction {
+        layer_pred: Layer,
+        layer_obs: Layer,
+        outcomes: Vec<Outcome>,
+    },
     /// An exhaustive layer permits outcomes a *later* exhaustive layer forbids: the
     /// compilation mapping is stronger than the source model at this point (expected and
     /// benign for correct mappings) — recorded, not flagged.
-    LaterLayerStronger { earlier: Layer, later: Layer, outcomes: Vec<Outcome> },
+    LaterLayerStronger {
+        earlier: Layer,
+        later: Layer,
+        outcomes: Vec<Outcome>,
+    },
     /// An exhaustive later layer permits outcomes an exhaustive earlier layer forbids:
     /// the compiled program admits behaviour the source model does not. Compiler-mapping
     /// bug candidate *or* model limitation; requires adjudication.
-    LaterLayerWeaker { earlier: Layer, later: Layer, outcomes: Vec<Outcome> },
+    LaterLayerWeaker {
+        earlier: Layer,
+        later: Layer,
+        outcomes: Vec<Outcome>,
+    },
     /// Two sampled layers disagree; only informative about coverage.
-    SampleCoverageDifference { a: Layer, b: Layer, only_a: Vec<Outcome>, only_b: Vec<Outcome> },
-    /// A later layer admits outcomes the primary source model forbids, but a *documented
-    /// weaker variant* of the source model (with the named axiom removed) admits them:
-    /// the divergence is explained by a known model-strength gap, not by the compiler.
-    ExplainedByModelGap { earlier: Layer, later: Layer, axiom: String, outcomes: Vec<Outcome> },
+    SampleCoverageDifference {
+        a: Layer,
+        b: Layer,
+        only_a: Vec<Outcome>,
+        only_b: Vec<Outcome>,
+    },
+    /// A later layer admits outcomes the primary source model forbids, but a documented
+    /// weaker variant of the source model (with the named axiom removed) admits them.
+    /// This is diagnostic compatibility only: it does not rule out a compiler-mapping
+    /// problem without independent adjudication.
+    ExplainedByModelGap {
+        earlier: Layer,
+        later: Layer,
+        axiom: String,
+        outcomes: Vec<Outcome>,
+    },
     /// One side unavailable.
     NotComparable { reason: String },
 }
@@ -106,7 +135,13 @@ pub struct Comparison {
 pub fn compare(a: Layer, sa: Option<&OutcomeSet>, b: Layer, sb: Option<&OutcomeSet>) -> Comparison {
     let (Some(sa), Some(sb)) = (sa, sb) else {
         let missing = if sa.is_none() { a } else { b };
-        return Comparison { a, b, classification: Classification::NotComparable { reason: format!("{} produced no outcome set", missing.name()) } };
+        return Comparison {
+            a,
+            b,
+            classification: Classification::NotComparable {
+                reason: format!("{} produced no outcome set", missing.name()),
+            },
+        };
     };
     let set_a: BTreeSet<&Outcome> = sa.outcomes.iter().collect();
     let set_b: BTreeSet<&Outcome> = sb.outcomes.iter().collect();
@@ -117,34 +152,59 @@ pub fn compare(a: Layer, sa: Option<&OutcomeSet>, b: Layer, sb: Option<&OutcomeS
             if only_a.is_empty() && only_b.is_empty() {
                 Classification::Consistent
             } else if !only_b.is_empty() {
-                Classification::LaterLayerWeaker { earlier: a, later: b, outcomes: only_b }
+                Classification::LaterLayerWeaker {
+                    earlier: a,
+                    later: b,
+                    outcomes: only_b,
+                }
             } else {
-                Classification::LaterLayerStronger { earlier: a, later: b, outcomes: only_a }
+                Classification::LaterLayerStronger {
+                    earlier: a,
+                    later: b,
+                    outcomes: only_a,
+                }
             }
         }
         (true, false) => {
             if only_b.is_empty() {
                 Classification::Consistent
             } else {
-                Classification::ObservedOutsidePrediction { layer_pred: a, layer_obs: b, outcomes: only_b }
+                Classification::ObservedOutsidePrediction {
+                    layer_pred: a,
+                    layer_obs: b,
+                    outcomes: only_b,
+                }
             }
         }
         (false, true) => {
             if only_a.is_empty() {
                 Classification::Consistent
             } else {
-                Classification::ObservedOutsidePrediction { layer_pred: b, layer_obs: a, outcomes: only_a }
+                Classification::ObservedOutsidePrediction {
+                    layer_pred: b,
+                    layer_obs: a,
+                    outcomes: only_a,
+                }
             }
         }
         (false, false) => {
             if only_a.is_empty() && only_b.is_empty() {
                 Classification::Consistent
             } else {
-                Classification::SampleCoverageDifference { a, b, only_a, only_b }
+                Classification::SampleCoverageDifference {
+                    a,
+                    b,
+                    only_a,
+                    only_b,
+                }
             }
         }
     };
-    Comparison { a, b, classification: cls }
+    Comparison {
+        a,
+        b,
+        classification: cls,
+    }
 }
 
 /// Per-layer summary of the *compiler* pipeline events for one thread, used to
@@ -169,7 +229,9 @@ fn orderings(ev: &LayerEvents) -> Vec<String> {
             Event::Load { ord, .. } => Some(format!("R.{ord}")),
             Event::Store { ord, .. } => Some(format!("W.{ord}")),
             Event::Rmw { op, ord, .. } => Some(format!("RMW.{op}.{ord}")),
-            Event::Cmpxchg { success, failure, .. } => Some(format!("CAS.{success}/{failure}")),
+            Event::Cmpxchg {
+                success, failure, ..
+            } => Some(format!("CAS.{success}/{failure}")),
             Event::Fence { ord } => Some(format!("F.{ord}")),
             Event::Asm { .. } => None,
         })
@@ -229,20 +291,48 @@ pub fn localize(layers: &[LayerOutcome]) -> Localization {
 }
 
 /// Like [`localize`], but when a divergence against the source model is found and a
-/// *weakened* source-model outcome set is supplied (same program, one axiom dropped), any
-/// outcome that the weakened model admits is reclassified as [`Classification::ExplainedByModelGap`].
-pub fn localize_with_gap(layers: &[LayerOutcome], weakened: Option<(&str, &OutcomeSet)>) -> Localization {
+/// weakened source-model outcome set is supplied (same program, one axiom dropped), any
+/// outcome that the weakened model admits is marked as diagnostic model compatibility.
+/// This does not establish the cause of a compiler or hardware disagreement.
+pub fn localize_with_gap(
+    layers: &[LayerOutcome],
+    weakened: Option<(&str, &OutcomeSet)>,
+) -> Localization {
     let chain: Vec<Layer> = layers.iter().map(|l| l.layer).collect();
-    let get = |l: Layer| layers.iter().find(|x| x.layer == l).and_then(|x| x.outcomes.as_ref());
+    let get = |l: Layer| {
+        layers
+            .iter()
+            .find(|x| x.layer == l)
+            .and_then(|x| x.outcomes.as_ref())
+    };
     let explain = |c: Comparison| -> Comparison {
-        let Some((axiom, weak)) = weakened else { return c };
+        let Some((axiom, weak)) = weakened else {
+            return c;
+        };
         let (earlier, later, outcomes) = match &c.classification {
-            Classification::LaterLayerWeaker { earlier, later, outcomes } if *earlier == Layer::SourceModel => (*earlier, *later, outcomes.clone()),
-            Classification::ObservedOutsidePrediction { layer_pred, layer_obs, outcomes } if *layer_pred == Layer::SourceModel => (*layer_pred, *layer_obs, outcomes.clone()),
+            Classification::LaterLayerWeaker {
+                earlier,
+                later,
+                outcomes,
+            } if *earlier == Layer::SourceModel => (*earlier, *later, outcomes.clone()),
+            Classification::ObservedOutsidePrediction {
+                layer_pred,
+                layer_obs,
+                outcomes,
+            } if *layer_pred == Layer::SourceModel => (*layer_pred, *layer_obs, outcomes.clone()),
             _ => return c,
         };
         if outcomes.iter().all(|o| weak.contains(o)) {
-            Comparison { a: c.a, b: c.b, classification: Classification::ExplainedByModelGap { earlier, later, axiom: axiom.to_string(), outcomes } }
+            Comparison {
+                a: c.a,
+                b: c.b,
+                classification: Classification::ExplainedByModelGap {
+                    earlier,
+                    later,
+                    axiom: axiom.to_string(),
+                    outcomes,
+                },
+            }
         } else {
             c
         }
@@ -255,42 +345,134 @@ pub fn localize_with_gap(layers: &[LayerOutcome], weakened: Option<(&str, &Outco
     if chain.contains(&Layer::Hardware) {
         for &l in &chain {
             if l != Layer::Hardware {
-                against_hardware.push(explain(compare(l, get(l), Layer::Hardware, get(Layer::Hardware))));
+                against_hardware.push(explain(compare(
+                    l,
+                    get(l),
+                    Layer::Hardware,
+                    get(Layer::Hardware),
+                )));
             }
         }
     }
-    let earliest = adjacent.iter().find(|c| !matches!(c.classification, Classification::Consistent | Classification::NotComparable { .. })).cloned();
-    let summary = match &earliest {
-        None => {
-            let n_nc = adjacent.iter().filter(|c| matches!(c.classification, Classification::NotComparable { .. })).count();
-            if n_nc == 0 {
-                "all adjacent layers consistent".to_string()
-            } else {
-                format!("no divergence among comparable layers ({n_nc} boundary/boundaries not comparable)")
-            }
+    let earliest = adjacent
+        .iter()
+        .find(|c| {
+            !matches!(
+                c.classification,
+                Classification::Consistent | Classification::NotComparable { .. }
+            )
+        })
+        .cloned();
+    let summary = if chain.len() < 2 {
+        match chain.first() {
+            Some(layer) => format!("insufficient comparable layers (only {})", layer.name()),
+            None => "insufficient comparable layers (no layer boundary was available)".to_string(),
         }
-        Some(c) => format!("earliest divergence between {} and {}: {}", c.a.name(), c.b.name(), describe(&c.classification)),
+    } else {
+        match &earliest {
+            None => {
+                let n_nc = adjacent
+                    .iter()
+                    .filter(|c| matches!(c.classification, Classification::NotComparable { .. }))
+                    .count();
+                if n_nc == 0 {
+                    "all adjacent layers consistent".to_string()
+                } else {
+                    format!("no divergence among comparable layers ({n_nc} boundary/boundaries not comparable)")
+                }
+            }
+            Some(c) => format!(
+                "earliest divergence between {} and {}: {}",
+                c.a.name(),
+                c.b.name(),
+                describe(&c.classification)
+            ),
+        }
     };
-    Localization { chain, adjacent, against_hardware, earliest_divergence: earliest, summary }
+    Localization {
+        chain,
+        adjacent,
+        against_hardware,
+        earliest_divergence: earliest,
+        summary,
+    }
 }
 
 pub fn describe(c: &Classification) -> String {
     match c {
         Classification::Consistent => "consistent".into(),
-        Classification::ObservedOutsidePrediction { layer_pred, layer_obs, outcomes } => {
-            format!("{} observed {} outcome(s) that {} forbids: {}", layer_obs.name(), outcomes.len(), layer_pred.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
+        Classification::ObservedOutsidePrediction {
+            layer_pred,
+            layer_obs,
+            outcomes,
+        } => {
+            format!(
+                "{} observed {} outcome(s) that {} forbids: {}",
+                layer_obs.name(),
+                outcomes.len(),
+                layer_pred.name(),
+                outcomes
+                    .iter()
+                    .map(|o| format!("[{o}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         }
-        Classification::LaterLayerStronger { earlier, later, outcomes } => {
-            format!("{} forbids {} outcome(s) that {} allows (mapping stronger than source model): {}", later.name(), outcomes.len(), earlier.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
+        Classification::LaterLayerStronger {
+            earlier,
+            later,
+            outcomes,
+        } => {
+            format!(
+                "{} forbids {} outcome(s) that {} allows (mapping stronger than source model): {}",
+                later.name(),
+                outcomes.len(),
+                earlier.name(),
+                outcomes
+                    .iter()
+                    .map(|o| format!("[{o}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         }
-        Classification::LaterLayerWeaker { earlier, later, outcomes } => {
-            format!("{} allows {} outcome(s) that {} forbids: {}", later.name(), outcomes.len(), earlier.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
+        Classification::LaterLayerWeaker {
+            earlier,
+            later,
+            outcomes,
+        } => {
+            format!(
+                "{} allows {} outcome(s) that {} forbids: {}",
+                later.name(),
+                outcomes.len(),
+                earlier.name(),
+                outcomes
+                    .iter()
+                    .map(|o| format!("[{o}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
         }
-        Classification::SampleCoverageDifference { a, b, only_a, only_b } => {
-            format!("sampled layers differ: only {}: {}; only {}: {}", a.name(), only_a.len(), b.name(), only_b.len())
+        Classification::SampleCoverageDifference {
+            a,
+            b,
+            only_a,
+            only_b,
+        } => {
+            format!(
+                "sampled layers differ: only {}: {}; only {}: {}",
+                a.name(),
+                only_a.len(),
+                b.name(),
+                only_b.len()
+            )
         }
-        Classification::ExplainedByModelGap { earlier, later, axiom, outcomes } => {
-            format!("{} allows {} outcome(s) that {} forbids, all admitted once axiom `{axiom}` is dropped from the source model (known model-strength gap): {}", later.name(), outcomes.len(), earlier.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
+        Classification::ExplainedByModelGap {
+            earlier,
+            later,
+            axiom,
+            outcomes,
+        } => {
+            format!("{} allows {} outcome(s) that {} forbids, all admitted by a diagnostic source-model variant with `{axiom}` removed: {}", later.name(), outcomes.len(), earlier.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
         }
         Classification::NotComparable { reason } => format!("not comparable: {reason}"),
     }
@@ -321,7 +503,8 @@ pub struct Bundle {
     pub lifted: Option<Lifted>,
     pub lift_error: Option<LiftError>,
     pub herd_source: Option<HerdResult>,
-    /// Source model with the no-thin-air axiom removed; used to explain, never to predict.
+    /// Nonstandard source model with the no-thin-air axiom removed; retained as diagnostic
+    /// context and never used to predict or reclassify a finding.
     pub herd_source_weak: Option<HerdResult>,
     pub herd_arch: Option<HerdResult>,
     pub miri_weak: Option<MiriResult>,
@@ -347,7 +530,10 @@ impl Bundle {
     pub fn from_json(s: &str) -> Result<Self, String> {
         let b: Bundle = serde_json::from_str(s).map_err(|e| format!("bundle parse error: {e}"))?;
         if b.schema_version != SCHEMA_VERSION {
-            return Err(format!("unsupported bundle schema version {}", b.schema_version));
+            return Err(format!(
+                "unsupported bundle schema version {}",
+                b.schema_version
+            ));
         }
         if b.litmus.digest() != b.litmus_digest {
             return Err("bundle corrupted: litmus digest mismatch".into());
@@ -376,7 +562,8 @@ pub fn redact(text: &str) -> (String, Vec<String>) {
         })
         .into_owned();
     // GitHub-style tokens.
-    let re2 = regex::Regex::new(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b").unwrap();
+    let re2 = regex::Regex::new(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")
+        .unwrap();
     let out = re2
         .replace_all(&out, |_: &regex::Captures| {
             reasons.push("redacted GitHub token".into());
@@ -391,7 +578,13 @@ mod tests {
     use super::*;
 
     fn set(v: &[&[&[u32]]], ex: bool) -> OutcomeSet {
-        OutcomeSet { outcomes: v.iter().map(|o| Outcome(o.iter().map(|r| r.to_vec()).collect())).collect(), exhaustive: ex }
+        OutcomeSet {
+            outcomes: v
+                .iter()
+                .map(|o| Outcome(o.iter().map(|r| r.to_vec()).collect()))
+                .collect(),
+            exhaustive: ex,
+        }
     }
 
     #[test]
@@ -400,48 +593,119 @@ mod tests {
         let obs = set(&[&[&[0], &[0]], &[&[1], &[0]]], false);
         let c = compare(Layer::SourceModel, Some(&pred), Layer::Hardware, Some(&obs));
         match c.classification {
-            Classification::ObservedOutsidePrediction { outcomes, .. } => assert_eq!(outcomes, vec![Outcome(vec![vec![0], vec![0]])]),
+            Classification::ObservedOutsidePrediction { outcomes, .. } => {
+                assert_eq!(outcomes, vec![Outcome(vec![vec![0], vec![0]])])
+            }
             other => panic!("{other:?}"),
         }
     }
 
     #[test]
     fn classifies_exhaustive_pairs() {
-        let src = set(&[&[&[0], &[0]], &[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]], true);
+        let src = set(
+            &[&[&[0], &[0]], &[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]],
+            true,
+        );
         let arch = set(&[&[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]], true);
-        let c = compare(Layer::SourceModel, Some(&src), Layer::ArchModel, Some(&arch));
-        assert!(matches!(c.classification, Classification::LaterLayerStronger { .. }));
-        let c = compare(Layer::SourceModel, Some(&arch), Layer::ArchModel, Some(&src));
-        assert!(matches!(c.classification, Classification::LaterLayerWeaker { .. }));
+        let c = compare(
+            Layer::SourceModel,
+            Some(&src),
+            Layer::ArchModel,
+            Some(&arch),
+        );
+        assert!(matches!(
+            c.classification,
+            Classification::LaterLayerStronger { .. }
+        ));
+        let c = compare(
+            Layer::SourceModel,
+            Some(&arch),
+            Layer::ArchModel,
+            Some(&src),
+        );
+        assert!(matches!(
+            c.classification,
+            Classification::LaterLayerWeaker { .. }
+        ));
         let c = compare(Layer::SourceModel, Some(&src), Layer::ArchModel, Some(&src));
         assert!(matches!(c.classification, Classification::Consistent));
     }
 
     #[test]
     fn not_comparable_when_missing() {
-        let c = compare(Layer::SourceModel, None, Layer::Hardware, Some(&set(&[], false)));
-        assert!(matches!(c.classification, Classification::NotComparable { .. }));
+        let c = compare(
+            Layer::SourceModel,
+            None,
+            Layer::Hardware,
+            Some(&set(&[], false)),
+        );
+        assert!(matches!(
+            c.classification,
+            Classification::NotComparable { .. }
+        ));
     }
 
     #[test]
     fn localize_finds_earliest() {
-        let full = set(&[&[&[0], &[0]], &[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]], true);
+        let full = set(
+            &[&[&[0], &[0]], &[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]],
+            true,
+        );
         let sc = set(&[&[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]], true);
         let layers = vec![
-            LayerOutcome { layer: Layer::SourceModel, status: Status::Predicted, outcomes: Some(full.clone()), tool: "t".into(), notes: vec![] },
-            LayerOutcome { layer: Layer::ArchModel, status: Status::Predicted, outcomes: Some(sc.clone()), tool: "t".into(), notes: vec![] },
-            LayerOutcome { layer: Layer::Hardware, status: Status::Observed, outcomes: Some(set(&[&[&[0], &[1]], &[&[1], &[0]]], false)), tool: "t".into(), notes: vec![] },
+            LayerOutcome {
+                layer: Layer::SourceModel,
+                status: Status::Predicted,
+                outcomes: Some(full.clone()),
+                tool: "t".into(),
+                notes: vec![],
+            },
+            LayerOutcome {
+                layer: Layer::ArchModel,
+                status: Status::Predicted,
+                outcomes: Some(sc.clone()),
+                tool: "t".into(),
+                notes: vec![],
+            },
+            LayerOutcome {
+                layer: Layer::Hardware,
+                status: Status::Observed,
+                outcomes: Some(set(&[&[&[0], &[1]], &[&[1], &[0]]], false)),
+                tool: "t".into(),
+                notes: vec![],
+            },
         ];
         let l = localize(&layers);
         let e = l.earliest_divergence.unwrap();
         assert_eq!((e.a, e.b), (Layer::SourceModel, Layer::ArchModel));
-        assert!(matches!(e.classification, Classification::LaterLayerStronger { .. }));
+        assert!(matches!(
+            e.classification,
+            Classification::LaterLayerStronger { .. }
+        ));
         assert_eq!(l.against_hardware.len(), 2);
     }
 
     #[test]
+    fn single_layer_is_not_reported_consistent() {
+        let result = localize(&[LayerOutcome {
+            layer: Layer::Hardware,
+            status: Status::Observed,
+            outcomes: Some(OutcomeSet {
+                outcomes: Vec::new(),
+                exhaustive: false,
+            }),
+            tool: "test".into(),
+            notes: Vec::new(),
+        }]);
+        assert!(result.summary.starts_with("insufficient comparable layers"));
+        assert!(result.earliest_divergence.is_none());
+    }
+
+    #[test]
     fn redacts_secrets() {
-        let (out, reasons) = redact("GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 and API_KEY: sk-live-1234 done");
+        let (out, reasons) = redact(
+            "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 and API_KEY: sk-live-1234 done",
+        );
         assert!(!out.contains("ghp_abc"));
         assert!(!out.contains("sk-live"));
         assert!(reasons.len() >= 2, "{reasons:?}");
