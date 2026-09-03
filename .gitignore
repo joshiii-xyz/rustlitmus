@@ -2,3 +2,5 @@
 /out
 /scratch
 *.o
+.hoplite/
+experiments/h4-noalias-release/probe_a64_*
