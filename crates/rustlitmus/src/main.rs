@@ -227,6 +227,8 @@ fn summarise(b: &Bundle) -> String {
         }
     }
     s.push_str(&format!("localization: {}\n", b.localization.summary));
+    let sc = rustlitmus::score::score(b);
+    s.push_str(&format!("score: {:.1} ({:?})\n", sc.total, sc.bucket));
     for c in &b.localization.against_hardware {
         if !matches!(c.classification, Classification::Consistent) {
             s.push_str(&format!("  vs hardware: {} — {}\n", c.a.name(), rustlitmus::evidence::describe(&c.classification)));
@@ -313,7 +315,8 @@ fn main() -> Result<()> {
                         unsupported += 1;
                     }
                     use std::io::Write;
-                    writeln!(index, "{}", serde_json::json!({"case": l.name, "config": cfg.label(), "divergence": b.localization.summary, "hardware_outside_prediction": hw_flags, "lift_error": b.lift_error.as_ref().map(|e| e.to_string())}))?;
+                    let sc = rustlitmus::score::score(&b);
+                    writeln!(index, "{}", serde_json::json!({"case": l.name, "config": cfg.label(), "divergence": b.localization.summary, "hardware_outside_prediction": hw_flags, "lift_error": b.lift_error.as_ref().map(|e| e.to_string()), "score": sc.total, "bucket": sc.bucket}))?;
                     let mark = if !hw_flags.is_empty() { "!!" } else if div { "~" } else { " " };
                     println!("{mark} {:<40} {}", l.name, b.localization.summary);
                     for h in &hw_flags {

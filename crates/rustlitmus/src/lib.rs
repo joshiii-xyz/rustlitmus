@@ -25,3 +25,4 @@ pub mod pipeline;
 pub mod process;
 pub mod render_c11;
 pub mod render_rust;
+pub mod score;

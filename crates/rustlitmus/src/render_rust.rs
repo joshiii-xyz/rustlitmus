@@ -122,7 +122,13 @@ pub fn render(litmus: &Litmus) -> RenderedRust {
     let _ = writeln!(s, "            self.count.store(0, Relaxed);");
     let _ = writeln!(s, "            self.gen.store(g + 1, Release);");
     let _ = writeln!(s, "        }} else {{");
-    let _ = writeln!(s, "            while self.gen.load(Acquire) == g {{ std::hint::spin_loop(); }}");
+    let _ = writeln!(s, "            // Spin briefly, then yield: with more threads than CPUs a pure spin");
+    let _ = writeln!(s, "            // barrier starves the thread that must arrive last.");
+    let _ = writeln!(s, "            let mut spins = 0u32;");
+    let _ = writeln!(s, "            while self.gen.load(Acquire) == g {{");
+    let _ = writeln!(s, "                spins += 1;");
+    let _ = writeln!(s, "                if spins < 2000 {{ std::hint::spin_loop(); }} else {{ std::thread::yield_now(); }}");
+    let _ = writeln!(s, "            }}");
     let _ = writeln!(s, "        }}");
     let _ = writeln!(s, "    }}");
     let _ = writeln!(s, "}}");
