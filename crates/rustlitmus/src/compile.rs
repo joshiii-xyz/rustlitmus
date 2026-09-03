@@ -260,7 +260,7 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
     let mut ev = LayerEvents::default();
     for line in body.lines() {
         let l = line.trim();
-        let is_atomic = l.contains("atomic::atomic_") || l.contains("atomic_xadd") || l.contains("atomic_xchg") || l.contains("atomic_cxchg") || l.contains("atomic_fence") || l.contains("atomic_store") || l.contains("atomic_load");
+        let is_atomic = l.contains("atomic::atomic_") || l.contains("atomic_xadd") || l.contains("atomic_xchg") || l.contains("atomic_cxchg") || l.contains("atomic_compare_exchange") || l.contains("atomic_fence") || l.contains("atomic_store") || l.contains("atomic_load");
         if !is_atomic || !l.contains("-> [") {
             continue;
         }
@@ -293,15 +293,22 @@ pub fn events_from_mir_optimized(body: &str) -> LayerEvents {
             ev.events.push(Event::Rmw { loc, op: "add".into(), ord });
         } else if l.contains("atomic_xchg") {
             ev.events.push(Event::Rmw { loc, op: "xchg".into(), ord });
-        } else if l.contains("atomic_cxchg") {
-            // Two orderings appear as generics: `<u32, AtomicOrdering::X, AtomicOrdering::Y>`.
+        } else if l.contains("atomic_cxchg") || l.contains("atomic_compare_exchange") {
+            // Intrinsic form: orderings as generics `AtomicOrdering::X, AtomicOrdering::Y`.
+            // Library-wrapper form (`atomic_compare_exchange::<u32>(ptr, old, new, Ordering::S, Ordering::F)`):
+            // orderings as const arguments.
             let mut ords = Vec::new();
-            let mut rest = l;
-            while let Some(i) = rest.find("AtomicOrdering::") {
-                let s = &rest[i + "AtomicOrdering::".len()..];
-                let name: String = s.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
-                ords.push(name.to_lowercase().replace("acqrel", "acq_rel").replace("seqcst", "seq_cst"));
-                rest = &s[name.len()..];
+            for marker in ["AtomicOrdering::", "atomic::Ordering::"] {
+                let mut rest = l;
+                while let Some(i) = rest.find(marker) {
+                    let s = &rest[i + marker.len()..];
+                    let name: String = s.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                    ords.push(name.to_lowercase().replace("acqrel", "acq_rel").replace("seqcst", "seq_cst"));
+                    rest = &s[name.len()..];
+                }
+                if !ords.is_empty() {
+                    break;
+                }
             }
             let success = ords.first().cloned().unwrap_or_else(|| "?".into());
             let failure = ords.get(1).cloned().unwrap_or_else(|| "?".into());
@@ -585,6 +592,22 @@ fn main() -> () {
         let ev = events_from_asm(&f, "x86_64-unknown-linux-gnu");
         let texts: Vec<&str> = ev.events.iter().map(|e| match e { Event::Asm { text } => text.as_str(), _ => "" }).collect();
         assert_eq!(texts, vec!["xchgl %eax, 64(%rdi)", "movl (%rdi), %ecx", "movl %ecx, (%rsi)", "lock xaddl %eax, 64(%rdi)", "retq"]);
+    }
+
+    #[test]
+    fn extracts_mir_cas_wrapper_form() {
+        let mir = r#"
+fn rl_thread_1(_1: &Locs, _2: &mut [u32; 2]) -> () {
+    bb0: {
+        _8 = &raw const (((*_1).2: std::sync::atomic::Atomic<u32>).0: std::cell::UnsafeCell<std::sync::atomic::private::Align4<u32>>);
+        _7 = copy _8 as *mut u32 (PtrToPtr);
+        _3 = std::sync::atomic::atomic_compare_exchange::<u32>(move _7, const 7_u32, const 9_u32, const std::sync::atomic::Ordering::Relaxed, const std::sync::atomic::Ordering::Acquire) -> [return: bb5, unwind terminate(abi)];
+    }
+}
+"#;
+        let f = extract_mir_fn(mir, "rl_thread_1").unwrap();
+        let ev = events_from_mir_optimized(&f);
+        assert_eq!(ev.events, vec![Event::Cmpxchg { loc: "loc1".into(), success: "relaxed".into(), failure: "acquire".into() }]);
     }
 
     #[test]
