@@ -1,7 +1,7 @@
 //! End-to-end pipeline for one case under one configuration, producing a [`Bundle`].
 
 use crate::compile::{compile, CompileConfig};
-use crate::evidence::{localize, redact, sha256_hex, thread_pipeline, Bundle, Layer, LayerOutcome, Provenance, Status, SCHEMA_VERSION};
+use crate::evidence::{redact, sha256_hex, thread_pipeline, Bundle, Layer, LayerOutcome, Provenance, Status, SCHEMA_VERSION};
 use crate::hardware::run_binary;
 use crate::herd::run_herd;
 use crate::lift::lift;
@@ -77,6 +77,16 @@ pub fn arch_model_for(target: &str) -> Option<&'static str> {
     }
 }
 
+/// The weakened companion of a source model (same file name with `-nooota` inserted before
+/// the extension), if it exists on disk. Only our in-repo models have companions.
+pub fn weakened_model_for(source_model: &str) -> Option<String> {
+    let p = Path::new(source_model);
+    let stem = p.file_stem()?.to_str()?;
+    let ext = p.extension()?.to_str()?;
+    let candidate = p.with_file_name(format!("{stem}-nooota.{ext}"));
+    candidate.is_file().then(|| candidate.display().to_string())
+}
+
 pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Budget, stages: &Stages, work: &Path, provenance: Provenance, source_model: &str) -> Result<Bundle, String> {
     litmus.validate()?;
     std::fs::create_dir_all(work).map_err(|e| format!("create {}: {e}", work.display()))?;
@@ -115,6 +125,18 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
         }
     } else {
         None
+    };
+    // Weakened source model (no-thin-air axiom dropped), used only to *explain* divergences:
+    // if the compiled program admits outcomes the primary model forbids but this variant
+    // admits, the cause is the model's OOTA prohibition, not the compiler.
+    let herd_source_weak = match (&herd_source, &tools.herd, weakened_model_for(source_model)) {
+        (Some(_), Some(h), Some(weak_model)) => {
+            let dec = |l: &str| crate::herd::parse_state_line(l, litmus);
+            let r = run_herd(h, &weak_model, &c11_path, Some(&dec), budget.herd_timeout);
+            replay.push(r.command.join(" "));
+            Some(r)
+        }
+        _ => None,
     };
 
     // Layer: Miri weak-memory emulation (sampled).
@@ -271,7 +293,8 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
 
     // Order layers in pipeline order for localisation.
     layers.sort_by_key(|l| l.layer);
-    let localization = localize(&layers);
+    let weak_set = herd_source_weak.as_ref().and_then(|r| r.outcomes.as_ref());
+    let localization = crate::evidence::localize_with_gap(&layers, weak_set.map(|s| ("no-thin-air", s)));
     limitations.push(format!(
         "Source model is herd7 `{source_model}`{}. Both exclude out-of-thin-air (po ∪ rf acyclic) and therefore forbid load-buffering outcomes that hardware can produce.",
         if source_model.contains("p0982") {
@@ -297,6 +320,7 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
         lifted,
         lift_error,
         herd_source,
+        herd_source_weak,
         herd_arch,
         miri_weak,
         miri_genmc,

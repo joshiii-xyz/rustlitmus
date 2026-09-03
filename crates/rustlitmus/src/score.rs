@@ -32,6 +32,9 @@ pub enum Bucket {
     OracleDisagreement,
     /// The compiled program is provably stronger than the source model (expected).
     MappingStronger,
+    /// The compiled program admits outcomes the source model forbids, but a documented
+    /// weaker variant of the source model admits them (e.g. OOTA prohibition vs load buffering).
+    KnownModelGap,
     /// Everything agreed.
     Consistent,
     /// Something could not be evaluated.
@@ -78,6 +81,12 @@ pub fn score(b: &Bundle) -> Score {
             signals.push(Signal { name: "mapping_stronger".into(), value: 0.2, note: "compiled program forbids outcomes the source model allows (expected for sound mappings)".into() });
             if bucket == Bucket::Consistent {
                 bucket = Bucket::MappingStronger;
+            }
+        }
+        if let Classification::ExplainedByModelGap { axiom, outcomes, .. } = &c.classification {
+            signals.push(Signal { name: "explained_by_model_gap".into(), value: 0.5, note: format!("{} outcome(s) admitted only when `{axiom}` is dropped from the source model", outcomes.len()) });
+            if bucket == Bucket::Consistent || bucket == Bucket::MappingStronger {
+                bucket = Bucket::KnownModelGap;
             }
         }
         if let Classification::NotComparable { reason } = &c.classification {
@@ -129,6 +138,7 @@ mod tests {
             lifted: None,
             lift_error: None,
             herd_source: None,
+            herd_source_weak: None,
             herd_arch: None,
             miri_weak: None,
             miri_genmc: None,

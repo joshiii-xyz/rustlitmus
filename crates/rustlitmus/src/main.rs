@@ -277,7 +277,11 @@ fn main() -> Result<()> {
             println!("bundle: {}", path.display());
         }
         Cmd::Sweep { family, out, tools, cfg, budget, skip, source_model, max_cases, max_secs } => {
-            let fams: Vec<Family> = if family == "all" { Family::ALL.to_vec() } else { vec![Family::from_name(&family).ok_or_else(|| anyhow!("unknown family {family}"))?] };
+            let fams: Vec<Family> = if family == "all" {
+                Family::ALL.to_vec()
+            } else {
+                family.split(',').map(|f| Family::from_name(f.trim()).ok_or_else(|| anyhow!("unknown family {f}"))).collect::<Result<Vec<_>>>()?
+            };
             let cfg = cfg.config();
             let tools = tools.tools();
             let budget = budget.budget();
@@ -300,6 +304,10 @@ fn main() -> Result<()> {
                     }
                     n += 1;
                     let work = out.join(&l.name).join(cfg.label());
+                    // Resumable: skip cases that already have a bundle for this config.
+                    if work.join("bundle.json").is_file() {
+                        continue;
+                    }
                     let prov = Provenance { generator: "sweep".into(), generation_reason: format!("exhaustive ordering enumeration of family {}", f.name()), seed: None, family: f.name().into(), parent_case: None, created_utc: now_utc() };
                     let b = match run_case(&l, &cfg, &tools, &budget, &stages, &work, prov, &source_model) {
                         Ok(b) => b,

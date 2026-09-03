@@ -88,6 +88,10 @@ pub enum Classification {
     LaterLayerWeaker { earlier: Layer, later: Layer, outcomes: Vec<Outcome> },
     /// Two sampled layers disagree; only informative about coverage.
     SampleCoverageDifference { a: Layer, b: Layer, only_a: Vec<Outcome>, only_b: Vec<Outcome> },
+    /// A later layer admits outcomes the primary source model forbids, but a *documented
+    /// weaker variant* of the source model (with the named axiom removed) admits them:
+    /// the divergence is explained by a known model-strength gap, not by the compiler.
+    ExplainedByModelGap { earlier: Layer, later: Layer, axiom: String, outcomes: Vec<Outcome> },
     /// One side unavailable.
     NotComparable { reason: String },
 }
@@ -221,17 +225,37 @@ pub struct Localization {
 }
 
 pub fn localize(layers: &[LayerOutcome]) -> Localization {
+    localize_with_gap(layers, None)
+}
+
+/// Like [`localize`], but when a divergence against the source model is found and a
+/// *weakened* source-model outcome set is supplied (same program, one axiom dropped), any
+/// outcome that the weakened model admits is reclassified as [`Classification::ExplainedByModelGap`].
+pub fn localize_with_gap(layers: &[LayerOutcome], weakened: Option<(&str, &OutcomeSet)>) -> Localization {
     let chain: Vec<Layer> = layers.iter().map(|l| l.layer).collect();
     let get = |l: Layer| layers.iter().find(|x| x.layer == l).and_then(|x| x.outcomes.as_ref());
+    let explain = |c: Comparison| -> Comparison {
+        let Some((axiom, weak)) = weakened else { return c };
+        let (earlier, later, outcomes) = match &c.classification {
+            Classification::LaterLayerWeaker { earlier, later, outcomes } if *earlier == Layer::SourceModel => (*earlier, *later, outcomes.clone()),
+            Classification::ObservedOutsidePrediction { layer_pred, layer_obs, outcomes } if *layer_pred == Layer::SourceModel => (*layer_pred, *layer_obs, outcomes.clone()),
+            _ => return c,
+        };
+        if outcomes.iter().all(|o| weak.contains(o)) {
+            Comparison { a: c.a, b: c.b, classification: Classification::ExplainedByModelGap { earlier, later, axiom: axiom.to_string(), outcomes } }
+        } else {
+            c
+        }
+    };
     let mut adjacent = Vec::new();
     for w in chain.windows(2) {
-        adjacent.push(compare(w[0], get(w[0]), w[1], get(w[1])));
+        adjacent.push(explain(compare(w[0], get(w[0]), w[1], get(w[1]))));
     }
     let mut against_hardware = Vec::new();
     if chain.contains(&Layer::Hardware) {
         for &l in &chain {
             if l != Layer::Hardware {
-                against_hardware.push(compare(l, get(l), Layer::Hardware, get(Layer::Hardware)));
+                against_hardware.push(explain(compare(l, get(l), Layer::Hardware, get(Layer::Hardware))));
             }
         }
     }
@@ -265,6 +289,9 @@ pub fn describe(c: &Classification) -> String {
         Classification::SampleCoverageDifference { a, b, only_a, only_b } => {
             format!("sampled layers differ: only {}: {}; only {}: {}", a.name(), only_a.len(), b.name(), only_b.len())
         }
+        Classification::ExplainedByModelGap { earlier, later, axiom, outcomes } => {
+            format!("{} allows {} outcome(s) that {} forbids, all admitted once axiom `{axiom}` is dropped from the source model (known model-strength gap): {}", later.name(), outcomes.len(), earlier.name(), outcomes.iter().map(|o| format!("[{o}]")).collect::<Vec<_>>().join(" "))
+        }
         Classification::NotComparable { reason } => format!("not comparable: {reason}"),
     }
 }
@@ -294,6 +321,8 @@ pub struct Bundle {
     pub lifted: Option<Lifted>,
     pub lift_error: Option<LiftError>,
     pub herd_source: Option<HerdResult>,
+    /// Source model with the no-thin-air axiom removed; used to explain, never to predict.
+    pub herd_source_weak: Option<HerdResult>,
     pub herd_arch: Option<HerdResult>,
     pub miri_weak: Option<MiriResult>,
     pub miri_genmc: Option<MiriResult>,
