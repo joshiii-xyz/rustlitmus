@@ -86,11 +86,50 @@ absence. AArch64 hardware unavailable here.
 **Prior art.** llvm-project#198811 (C, `restrict`), rust-lang/rust#144351 (asm fence). The
 Rust `&mut` = `noalias` angle is *not* in either issue as of 2026-06-03.
 
-**Status.** active. Value: high if the Rust-facing case is (i) sound Rust and (ii) observably
-miscompiled; efriedma's position implies (ii) is possible. Next: construct a *sound* Rust
-program where the pointee is legitimately read by another thread after acquire on the flag
-(the `&mut` is dropped before the reader runs), run on AArch64 hardware or under herd7 lifted
-asm, and determine whether Rust's aliasing model makes it UB (Stacked/Tree Borrows).
+**Status.** **weakened → reclassified as a control (source-level UB under Rust's aliasing
+models)**, 2026-09-03 evening.
+
+**Falsification experiment performed.** `experiments/h4-noalias-release/miri_check.rs`
+constructs the exact observer that would witness the reordering: thread A calls
+`producer(&mut *cell, &flag, 1, true)`; thread B spins on `flag` with `Acquire` and then
+performs an *atomic relaxed load* of the cell. Miri verdicts (observed, nightly 1.100
+miri 0.1.0 2e2b193f8a):
+
+| Aliasing model | Seeds | Verdict |
+| --- | --- | --- |
+| Stacked Borrows (default) | seed 0, 3; preemption 0.9 | ok |
+| Stacked Borrows | `-Zmiri-many-seeds=0..16` | **UB at seed 15**: "not granting access to tag <7402> because that would remove [Unique for <7371>] which is strongly protected" — the observer's read while `producer`'s `&mut b` argument is still live (protected) |
+| Tree Borrows | default seed | **UB**: "this foreign read access would cause the protected tag (currently Unique) to become Disabled; protected tags must never be Disabled" |
+| Tree Borrows | seed 5 | ok (interleaving happened not to expose it) |
+
+Both of Rust's candidate aliasing models classify the *only* observer that could witness the
+LLVM 23 reordering as UB, because the observer reads the pointee while the `&mut` argument is
+protected (function still executing). This matches nikic's reading of `noalias` for C
+(`restrict`), transplanted to Rust: the release store inside the function cannot make the
+`&mut`-protected memory legitimately observable *during* the function's execution. Once
+`producer` returns, its `&mut` is dead and any later observation is fine — and by then both
+stores have executed. The reordering is therefore **not a Rust-visible miscompilation**; it is
+a behaviour change visible only to UB programs.
+
+Consequences:
+1. H4 becomes a **positive control** for the definedness layer: a program whose compiled
+   code *looks* wrong at the assembly layer (release store before the protected payload
+   store) but whose only witness is UB. The system must classify such a case as
+   "source-level undefined behaviour", not "compiler bug", and it now does so via Miri
+   aliasing checks.
+2. The failure appears only under some schedules/seeds: single-seed Miri runs (the common
+   practice) pass. `-Zmiri-many-seeds` was necessary. This is itself a small but concrete
+   methodological result: *aliasing-model UB in concurrent code is schedule-dependent, and
+   the default seed missed it under Stacked Borrows.*
+3. The remaining open question (efriedma's) is whether LLVM's own semantics for `noalias`
+   should say this; that is an LLVM LangRef issue, not a Rust bug. Rust's model (Stacked /
+   Tree Borrows protectors) is already unambiguous here.
+
+**Prior art check.** llvm-project#198811 (2026-05-20, open) is the C `restrict` instance
+and discusses exactly this soundness argument; the Rust protector angle is not in the thread
+as of 2026-06-03 (last comment). rust-lang/rust#144351 is a different mechanism (`asm!`).
+Not novel as a *compiler behaviour*; novel only as a *documented Rust-side adjudication*.
+
 
 ---
 

@@ -63,9 +63,16 @@ struct ConfigArgs {
 impl ConfigArgs {
     fn config(&self) -> CompileConfig {
         let mut extra = self.rustc_flags.clone();
-        // AArch64: keep atomics inline so the lifter can see them.
-        if self.target.starts_with("aarch64") && !extra.iter().any(|f| f.contains("outline-atomics")) {
-            extra.push("-Ctarget-feature=-outline-atomics".into());
+        // AArch64: keep atomics inline so the lifter can see them, and use the cross linker.
+        if self.target.starts_with("aarch64") {
+            if !extra.iter().any(|f| f.contains("outline-atomics")) {
+                extra.push("-Ctarget-feature=-outline-atomics".into());
+            }
+            if !extra.iter().any(|f| f.starts_with("-Clinker")) && std::env::consts::ARCH != "aarch64" {
+                if let Some(cc) = rustlitmus::process::which("aarch64-linux-gnu-gcc") {
+                    extra.push(format!("-Clinker={}", cc.display()));
+                }
+            }
         }
         CompileConfig { toolchain: self.toolchain.clone(), target: self.target.clone(), opt_level: self.opt_level.clone(), extra_flags: extra }
     }
@@ -125,7 +132,7 @@ enum Cmd {
         #[arg(long, default_value = "")]
         skip: String,
         /// herd7 source-level model file.
-        #[arg(long, default_value = "rc11.cat")]
+        #[arg(long, default_value = "models/rc11-p0982.cat")]
         source_model: String,
         /// Generation reason recorded in provenance.
         #[arg(long, default_value = "manual")]
@@ -145,7 +152,7 @@ enum Cmd {
         budget: BudgetArgs,
         #[arg(long, default_value = "miri-weak,miri-genmc")]
         skip: String,
-        #[arg(long, default_value = "rc11.cat")]
+        #[arg(long, default_value = "models/rc11-p0982.cat")]
         source_model: String,
         /// Stop after this many cases (0 = no limit).
         #[arg(long, default_value_t = 0)]
@@ -167,6 +174,9 @@ enum Cmd {
         budget: BudgetArgs,
         #[arg(long, default_value = "")]
         skip: String,
+        /// herd7 source-level model (default: the model recorded in the bundle).
+        #[arg(long)]
+        source_model: Option<String>,
     },
 }
 
@@ -326,13 +336,14 @@ fn main() -> Result<()> {
                 println!("  {r}");
             }
         }
-        Cmd::Replay { bundle, out, tools, budget, skip } => {
+        Cmd::Replay { bundle, out, tools, budget, skip, source_model } => {
             let s = std::fs::read_to_string(&bundle)?;
             let b = Bundle::from_json(&s).map_err(|e| anyhow!(e))?;
             let cfg = b.config().cloned().ok_or_else(|| anyhow!("bundle has no compile config to replay"))?;
             let work = out.join(&b.litmus.name).join(cfg.label());
             let prov = Provenance { generator: "replay".into(), generation_reason: format!("replay of {}", b.case_id), seed: None, family: b.provenance.family.clone(), parent_case: Some(b.case_id.clone()), created_utc: now_utc() };
-            let nb = run_case(&b.litmus, &cfg, &tools.tools(), &budget.budget(), &parse_skip(&skip), &work, prov, "rc11.cat").map_err(|e| anyhow!(e))?;
+            let source_model = source_model.or_else(|| b.herd_source.as_ref().map(|h| h.model.clone())).unwrap_or_else(|| "models/rc11-p0982.cat".into());
+            let nb = run_case(&b.litmus, &cfg, &tools.tools(), &budget.budget(), &parse_skip(&skip), &work, prov, &source_model).map_err(|e| anyhow!(e))?;
             std::fs::write(work.join("bundle.json"), nb.to_json())?;
             print!("{}", summarise(&nb));
             let mut same = true;

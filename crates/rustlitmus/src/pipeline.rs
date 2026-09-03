@@ -272,7 +272,14 @@ pub fn run_case(litmus: &Litmus, cfg: &CompileConfig, tools: &Tools, budget: &Bu
     // Order layers in pipeline order for localisation.
     layers.sort_by_key(|l| l.layer);
     let localization = localize(&layers);
-    limitations.push("Rust/C++20 source model approximated by herd7 rc11.cat (RC11: release sequences per C++17, no P0982 weakening; OOTA excluded).".into());
+    limitations.push(format!(
+        "Source model is herd7 `{source_model}`{}. Both exclude out-of-thin-air (po ∪ rf acyclic) and therefore forbid load-buffering outcomes that hardware can produce.",
+        if source_model.contains("p0982") {
+            " (RC11 with C++20/P0982 release sequences: only RMWs continue a release sequence — this is what Rust specifies)"
+        } else {
+            " (stock RC11: same-thread relaxed stores continue release sequences, per C++17 — STRONGER than Rust/C++20)"
+        }
+    ));
     limitations.push("Hardware outcome sets are finite samples: absence is not impossibility.".into());
 
     let case_id = format!("{}-{}", litmus.name, &litmus.digest()[..12]);

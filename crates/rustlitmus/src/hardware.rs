@@ -75,6 +75,19 @@ pub struct HardwareResult {
     pub command: Vec<String>,
 }
 
+/// Guess the cross sysroot for a `qemu-<arch>` binary from the Debian multiarch layout.
+fn emulator_sysroot(emulator: &Path) -> Option<String> {
+    let name = emulator.file_name()?.to_str()?;
+    let triple = match name {
+        "qemu-aarch64" => "aarch64-linux-gnu",
+        "qemu-riscv64" => "riscv64-linux-gnu",
+        "qemu-ppc64le" => "powerpc64le-linux-gnu",
+        _ => return None,
+    };
+    let p = format!("/usr/{triple}");
+    Path::new(&p).is_dir().then_some(p)
+}
+
 pub fn run_binary(binary: &Path, emulator: Option<&Path>, batches: usize, iters_per_batch: usize, timeout: Duration) -> HardwareResult {
     let binary_sha256 = std::fs::read(binary).ok().map(|b| {
         use sha2::{Digest, Sha256};
@@ -86,7 +99,17 @@ pub fn run_binary(binary: &Path, emulator: Option<&Path>, batches: usize, iters_
     let mut warnings = Vec::new();
     let iters_arg = iters_per_batch.to_string();
     let spec = match emulator {
-        Some(e) => RunSpec::new(e, [binary.display().to_string().as_str(), iters_arg.as_str()]),
+        Some(e) => {
+            // qemu-user needs the target sysroot for the dynamic loader.
+            let mut args: Vec<String> = Vec::new();
+            if let Some(sysroot) = emulator_sysroot(e) {
+                args.push("-L".into());
+                args.push(sysroot);
+            }
+            args.push(binary.display().to_string());
+            args.push(iters_arg.clone());
+            RunSpec::new(e, args)
+        }
         None => RunSpec::new(binary, [iters_arg.as_str()]),
     }
     .timeout(timeout);

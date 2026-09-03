@@ -51,6 +51,10 @@ impl CompileConfig {
     pub fn label(&self) -> String {
         let mut s = format!("{}-{}-O{}", self.toolchain, self.target, self.opt_level);
         for f in &self.extra_flags {
+            // The linker path is host-specific plumbing, not a semantic dimension.
+            if f.starts_with("-Clinker") {
+                continue;
+            }
             s.push('-');
             s.push_str(&f.replace(['=', ',', ' ', '/'], "_").replace("-C_", ""));
         }
