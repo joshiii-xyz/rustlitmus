@@ -1,0 +1,23 @@
+[package]
+name = "rustlitmus"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cross-layer semantic evidence and localisation for concurrent Rust: source → MIR → LLVM IR → assembly → architecture model → hardware"
+
+[[bin]]
+name = "rustlitmus"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
