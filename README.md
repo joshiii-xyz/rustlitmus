@@ -56,6 +56,7 @@ visible as limitations in the bundle; they are never treated as agreement.
 Sweeps default to 32 cases and require a positive `--max-cases` value. Increase that value
 deliberately for a larger campaign. Every external tool invocation is bounded by
 `--timeout-secs`; `--max-secs` is a secondary stop condition checked between cases.
+The sweep's follow-up count excludes expected stronger mappings and unavailable layers.
 
 ## Evidence rules
 
@@ -63,6 +64,9 @@ deliberately for a larger campaign. Every external tool invocation is bounded by
   occurred on that machine and configuration. Not seeing one is not evidence of impossibility.
 - A source-model, architecture-model, and hardware result only become comparable when they
   describe the same rendered case and compiled artifact.
+- Each compiler invocation receives a fresh artifact directory. A failed compilation has no
+  trusted compiler artifacts or executable, so it cannot reuse a prior successful binary.
+- Compiler-pipeline comparisons include full atomic event shapes, not only memory orderings.
 - The bundled no-thin-air variant is diagnostic only. It is not a Rust, C++20, or hardware
   specification and cannot dismiss a possible compiler-mapping issue.
 - Reproduce a candidate with preserved bundle inputs, another toolchain or target, and an

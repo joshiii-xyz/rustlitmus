@@ -297,7 +297,12 @@ fn summarise(b: &Bundle) -> String {
         }
     }
     for tp in &b.pipeline {
-        if let Some((a, bb)) = &tp.first_ordering_change {
+        if let Some((a, bb)) = &tp.first_event_change {
+            s.push_str(&format!(
+                "  {}: atomic event shape changes between {a} and {bb}: {:?}\n",
+                tp.symbol, tp.event_shape_chain
+            ));
+        } else if let Some((a, bb)) = &tp.first_ordering_change {
             s.push_str(&format!(
                 "  {}: ordering annotations change between {a} and {bb}: {:?}\n",
                 tp.symbol, tp.ordering_chain
@@ -449,7 +454,12 @@ fn main() -> Result<()> {
                         }
                     };
                     std::fs::write(work.join("bundle.json"), b.to_json())?;
-                    let div = b.localization.earliest_divergence.is_some();
+                    let needs_follow_up = b
+                        .localization
+                        .adjacent
+                        .iter()
+                        .chain(b.localization.against_hardware.iter())
+                        .any(|c| rustlitmus::evidence::requires_follow_up(&c.classification));
                     let hw_flags: Vec<String> = b
                         .localization
                         .against_hardware
@@ -474,7 +484,7 @@ fn main() -> Result<()> {
                     )?;
                     let mark = if !hw_flags.is_empty() {
                         "!!"
-                    } else if div {
+                    } else if needs_follow_up {
                         "~"
                     } else {
                         " "
@@ -483,12 +493,12 @@ fn main() -> Result<()> {
                     for h in &hw_flags {
                         println!("     HARDWARE OUTSIDE PREDICTION: {h}");
                     }
-                    if div || !hw_flags.is_empty() {
+                    if needs_follow_up || !hw_flags.is_empty() {
                         divergent.push((l.name.clone(), b.localization.summary.clone(), hw_flags));
                     }
                 }
             }
-            println!("\nsweep: {n} cases, {} with a divergence, {unsupported} not liftable, {:.0?} elapsed", divergent.len(), start.elapsed());
+            println!("\nsweep: {n} cases, {} requiring follow-up, {unsupported} not liftable, {:.0?} elapsed", divergent.len(), start.elapsed());
             println!("index: {}", index_path.display());
         }
         Cmd::Inspect { bundle } => {

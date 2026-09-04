@@ -289,6 +289,7 @@ pub fn run_case(
     // Layer: architecture model on lifted assembly.
     let (lifted, lift_error, herd_arch) = if stages.herd_arch {
         match (&compile_res, &tools.herd, arch_model_for(&cfg.target)) {
+            (Some(c), _, _) if c.exit_code != Some(0) => (None, None, None),
             (Some(c), Some(h), Some(model)) => {
                 let asm: Vec<Option<String>> = c.threads.iter().map(|t| t.asm.clone()).collect();
                 match lift(litmus, cfg, &asm) {
@@ -346,7 +347,11 @@ pub fn run_case(
 
     // Layer: hardware (or labelled emulation).
     let hardware = if stages.hardware {
-        match compile_res.as_ref().and_then(|c| c.binary.clone()) {
+        match compile_res
+            .as_ref()
+            .filter(|c| c.exit_code == Some(0))
+            .and_then(|c| c.binary.clone())
+        {
             Some(bin) => {
                 let native = cfg.target.starts_with(std::env::consts::ARCH)
                     || (cfg.target.starts_with("x86_64") && std::env::consts::ARCH == "x86_64");

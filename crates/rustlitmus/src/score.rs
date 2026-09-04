@@ -151,6 +151,20 @@ pub fn score(b: &Bundle) -> Score {
                 bucket = Bucket::KnownModelGap;
             }
         }
+        if let Classification::SampleCoverageDifference { a, b, .. } = &c.classification {
+            signals.push(Signal {
+                name: "sample_coverage_difference".into(),
+                value: -0.5,
+                note: format!(
+                    "{} and {} produced different sampled outcome sets; increase coverage before drawing a conclusion",
+                    a.name(),
+                    b.name()
+                ),
+            });
+            if bucket == Bucket::Consistent || bucket == Bucket::MappingStronger {
+                bucket = Bucket::Incomplete;
+            }
+        }
         if let Classification::NotComparable { reason } = &c.classification {
             signals.push(Signal {
                 name: "incomplete".into(),
@@ -177,16 +191,22 @@ pub fn score(b: &Bundle) -> Score {
         value: 0.3 * n as f64,
         note: format!("{n} layers produced outcome sets"),
     });
-    // 4. Compiler-pipeline ordering change (annotations differ between MIR and LLVM IR).
+    // 4. Compiler-pipeline event change (atomic event shapes differ between IR layers).
     for tp in &b.pipeline {
-        if let Some((a, c)) = &tp.first_ordering_change {
+        if let Some((a, c)) = tp
+            .first_event_change
+            .as_ref()
+            .or(tp.first_ordering_change.as_ref())
+        {
+            let (signal_name, subject) = if tp.first_event_change.is_some() {
+                ("pipeline_event_change", "atomic event shapes")
+            } else {
+                ("pipeline_ordering_change", "ordering annotations")
+            };
             signals.push(Signal {
-                name: "pipeline_ordering_change".into(),
+                name: signal_name.into(),
                 value: 2.0,
-                note: format!(
-                    "{}: ordering annotations differ between {a} and {c}",
-                    tp.symbol
-                ),
+                note: format!("{}: {subject} differ between {a} and {c}", tp.symbol),
             });
         }
     }
@@ -288,5 +308,16 @@ mod tests {
             },
         }]);
         assert_eq!(score(&b).bucket, Bucket::OracleDisagreement);
+        b.localization = loc(vec![Comparison {
+            a: Layer::SourceEmulator,
+            b: Layer::Hardware,
+            classification: Classification::SampleCoverageDifference {
+                a: Layer::SourceEmulator,
+                b: Layer::Hardware,
+                only_a: vec![crate::litmus::Outcome(vec![])],
+                only_b: vec![],
+            },
+        }]);
+        assert_eq!(score(&b).bucket, Bucket::Incomplete);
     }
 }

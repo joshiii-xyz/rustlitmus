@@ -247,9 +247,12 @@ pub fn render(litmus: &Litmus) -> RenderedRust {
 /// unchanged; only the driver differs. Output is one histogram line with count 1.
 pub fn render_single(litmus: &Litmus) -> String {
     let full = render(litmus).source;
-    // Keep everything up to and including the thread functions (i.e. drop from
-    // `const NTHREADS` onwards) and append a minimal main.
-    let cut = full.find("const NTHREADS").expect("renderer layout");
+    // Keep everything up to and including the thread functions, then append a minimal
+    // main. Searching from the end avoids a user-controlled litmus name in the opening
+    // comment becoming the cut point.
+    let cut = full
+        .rfind("\nconst NTHREADS: usize = ")
+        .expect("renderer layout");
     let mut s = full[..cut].to_string();
     let _ = writeln!(s, "fn main() {{");
     let _ = writeln!(s, "    let locs = Locs::new();");
@@ -344,6 +347,17 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn single_renderer_ignores_a_name_that_mentions_the_harness_marker() {
+        let mut litmus = sb();
+        litmus.name = "fn main() { const NTHREADS".into();
+
+        let single = render_single(&litmus);
+        assert!(single.contains("pub struct Locs"));
+        assert!(single.contains("rl_thread_0"));
+        assert_eq!(single.matches("\nfn main() {").count(), 1);
     }
 
     #[test]

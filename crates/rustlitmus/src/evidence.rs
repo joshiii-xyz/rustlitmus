@@ -125,6 +125,18 @@ pub enum Classification {
     NotComparable { reason: String },
 }
 
+/// Whether this comparison needs a human follow-up. Stronger compiled mappings are
+/// expected for sound compilation, while unavailable layers and diagnostic model context
+/// do not establish a candidate.
+pub fn requires_follow_up(classification: &Classification) -> bool {
+    matches!(
+        classification,
+        Classification::ObservedOutsidePrediction { .. }
+            | Classification::LaterLayerWeaker { .. }
+            | Classification::SampleCoverageDifference { .. }
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comparison {
     pub a: Layer,
@@ -216,10 +228,21 @@ pub struct ThreadPipeline {
     pub mir_optimized: Option<LayerEvents>,
     pub llvm_ir: Option<LayerEvents>,
     pub asm: Option<LayerEvents>,
-    /// Orderings, in program order, at each layer where they are syntactically present.
+    /// Orderings, in program order, at each comparable IR layer.
     pub ordering_chain: Vec<(String, Vec<String>)>,
     /// First adjacent pair of layers where the ordering sequence differs, if any.
     pub first_ordering_change: Option<(String, String)>,
+    /// Full atomic event fingerprints at comparable IR layers. Unlike `ordering_chain`,
+    /// these include the event kind, source location, ordering, and RMW/CAS details.
+    /// Assembly stays outside this chain because its raw instructions do not carry the
+    /// same source-level annotation vocabulary; the lifter handles that boundary.
+    #[serde(default)]
+    pub event_shape_chain: Vec<(String, Vec<String>)>,
+    /// First adjacent pair of comparable IR layers whose full atomic event fingerprints
+    /// differ. This catches location or operation changes that a pure ordering comparison
+    /// cannot see.
+    #[serde(default)]
+    pub first_event_change: Option<(String, String)>,
 }
 
 fn orderings(ev: &LayerEvents) -> Vec<String> {
@@ -238,18 +261,50 @@ fn orderings(ev: &LayerEvents) -> Vec<String> {
         .collect()
 }
 
+fn event_shapes(ev: &LayerEvents) -> Vec<String> {
+    ev.events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Load { loc, ord } => Some(format!("R.{loc}.{ord}")),
+            Event::Store { loc, ord } => Some(format!("W.{loc}.{ord}")),
+            Event::Rmw { loc, op, ord } => Some(format!("RMW.{loc}.{op}.{ord}")),
+            Event::Cmpxchg {
+                loc,
+                success,
+                failure,
+            } => Some(format!("CAS.{loc}.{success}/{failure}")),
+            Event::Fence { ord } => Some(format!("F.{ord}")),
+            Event::Asm { .. } => None,
+        })
+        .collect()
+}
+
 pub fn thread_pipeline(t: &crate::compile::ThreadArtifacts) -> ThreadPipeline {
     let mut chain = Vec::new();
+    let mut shape_chain = Vec::new();
+    if let Some(e) = &t.events_mir_built {
+        chain.push(("mir_built".to_string(), orderings(e)));
+        shape_chain.push(("mir_built".to_string(), event_shapes(e)));
+    }
     if let Some(e) = &t.events_mir_optimized {
         chain.push(("mir_optimized".to_string(), orderings(e)));
+        shape_chain.push(("mir_optimized".to_string(), event_shapes(e)));
     }
     if let Some(e) = &t.events_llvm_ir {
         chain.push(("llvm_ir".to_string(), orderings(e)));
+        shape_chain.push(("llvm_ir".to_string(), event_shapes(e)));
     }
     let mut first_change = None;
     for w in chain.windows(2) {
         if w[0].1 != w[1].1 {
             first_change = Some((w[0].0.clone(), w[1].0.clone()));
+            break;
+        }
+    }
+    let mut first_event_change = None;
+    for w in shape_chain.windows(2) {
+        if w[0].1 != w[1].1 {
+            first_event_change = Some((w[0].0.clone(), w[1].0.clone()));
             break;
         }
     }
@@ -261,6 +316,8 @@ pub fn thread_pipeline(t: &crate::compile::ThreadArtifacts) -> ThreadPipeline {
         asm: t.events_asm.clone(),
         ordering_chain: chain,
         first_ordering_change: first_change,
+        event_shape_chain: shape_chain,
+        first_event_change,
     }
 }
 
@@ -588,6 +645,62 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_flags_location_change_even_when_orderings_match() {
+        let mir_events = LayerEvents {
+            events: vec![
+                Event::Store {
+                    loc: "loc0".into(),
+                    ord: "relaxed".into(),
+                },
+                Event::Load {
+                    loc: "loc1".into(),
+                    ord: "relaxed".into(),
+                },
+            ],
+            unparsed: Vec::new(),
+        };
+        let llvm_events = LayerEvents {
+            events: vec![
+                Event::Store {
+                    loc: "loc1".into(),
+                    ord: "relaxed".into(),
+                },
+                Event::Load {
+                    loc: "loc0".into(),
+                    ord: "relaxed".into(),
+                },
+            ],
+            unparsed: Vec::new(),
+        };
+        let thread = crate::compile::ThreadArtifacts {
+            symbol: "rl_thread_0".into(),
+            mir_built: None,
+            mir_optimized: None,
+            llvm_ir: None,
+            asm: None,
+            events_mir_built: Some(mir_events.clone()),
+            events_mir_optimized: Some(mir_events),
+            events_llvm_ir: Some(llvm_events),
+            events_asm: None,
+        };
+
+        let pipeline = thread_pipeline(&thread);
+        assert_eq!(
+            pipeline
+                .ordering_chain
+                .iter()
+                .map(|(layer, _)| layer.as_str())
+                .collect::<Vec<_>>(),
+            vec!["mir_built", "mir_optimized", "llvm_ir"]
+        );
+        assert!(pipeline.first_ordering_change.is_none());
+        assert_eq!(
+            pipeline.first_event_change,
+            Some(("mir_optimized".into(), "llvm_ir".into()))
+        );
+    }
+
+    #[test]
     fn classifies_observed_outside_prediction() {
         let pred = set(&[&[&[0], &[1]], &[&[1], &[0]], &[&[1], &[1]]], true);
         let obs = set(&[&[&[0], &[0]], &[&[1], &[0]]], false);
@@ -598,6 +711,29 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn follow_up_excludes_expected_stronger_mappings() {
+        let outcome = Outcome(vec![vec![0]]);
+        assert!(!requires_follow_up(&Classification::LaterLayerStronger {
+            earlier: Layer::SourceModel,
+            later: Layer::ArchModel,
+            outcomes: vec![outcome.clone()],
+        }));
+        assert!(requires_follow_up(&Classification::LaterLayerWeaker {
+            earlier: Layer::SourceModel,
+            later: Layer::ArchModel,
+            outcomes: vec![outcome.clone()],
+        }));
+        assert!(requires_follow_up(
+            &Classification::SampleCoverageDifference {
+                a: Layer::SourceEmulator,
+                b: Layer::Hardware,
+                only_a: vec![outcome],
+                only_b: Vec::new(),
+            }
+        ));
     }
 
     #[test]

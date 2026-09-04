@@ -142,6 +142,32 @@ fn absolute_path(path: &Path) -> Result<PathBuf, String> {
     Ok(cwd.join(path))
 }
 
+/// Create a fresh artifact directory for one compiler invocation.
+///
+/// A failed `rustc` invocation can leave some outputs behind. Reusing a fixed directory
+/// would let a later failed compile accidentally consume artifacts from an earlier
+/// successful compile, so each attempt gets an isolated directory that is retained with
+/// the evidence bundle.
+fn fresh_attempt_dir(root: &Path) -> Result<PathBuf, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("read system clock: {e}"))?
+        .as_nanos();
+    let pid = std::process::id();
+    for suffix in 0..1000 {
+        let dir = root.join(format!("attempt-{pid}-{nanos}-{suffix}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("create {}: {e}", dir.display())),
+        }
+    }
+    Err(format!(
+        "could not allocate a fresh compile directory below {}",
+        root.display()
+    ))
+}
+
 pub fn toolchain_id(toolchain: &str) -> Result<ToolchainId, String> {
     let out = run(
         &RunSpec::new(rustc_path(), [&format!("+{toolchain}"), "-vV"])
@@ -698,16 +724,18 @@ pub fn compile(
     thread_symbols: &[String],
     timeout: Duration,
 ) -> Result<CompileResult, String> {
-    // `rustc` runs with `out_dir` as its working directory so its incidental files stay
-    // together. Make input and output paths absolute before constructing its command:
-    // otherwise a caller using relative paths makes rustc look for `out_dir/source_path`.
+    // `rustc` runs in a fresh child of `out_dir` so its incidental files stay together
+    // without being mistaken for artifacts from a prior attempt. Make input and output
+    // paths absolute before constructing its command: otherwise a caller using relative
+    // paths makes rustc look for `out_dir/source_path`.
     let source_path = absolute_path(source_path)?;
     let out_dir = absolute_path(out_dir)?;
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create {}: {e}", out_dir.display()))?;
+    let attempt_dir = fresh_attempt_dir(&out_dir)?;
     let tc = toolchain_id(&cfg.toolchain)?;
     let nightly = tc.is_nightly();
-    let mir_dir = out_dir.join("mir-dumps");
-    let out_base = out_dir.join("prog");
+    let mir_dir = attempt_dir.join("mir-dumps");
+    let out_base = attempt_dir.join("prog");
     let mut args: Vec<String> = vec![
         format!("+{}", cfg.toolchain),
         source_path.display().to_string(),
@@ -729,10 +757,20 @@ pub fn compile(
     args.extend(cfg.extra_flags.iter().cloned());
     let spec = RunSpec::new(rustc_path(), args.iter().map(String::as_str))
         .timeout(timeout)
-        .cwd(out_dir);
+        .cwd(&attempt_dir);
     let command = spec.command_line();
     let out = run(&spec).map_err(|e| e.to_string())?;
+    let succeeded = out.exit_code == Some(0);
     let mut unavailable = BTreeMap::new();
+    if !succeeded {
+        unavailable.insert(
+            "compile".into(),
+            format!(
+                "rustc exited {:?}; compiler artifacts are not trusted",
+                out.exit_code
+            ),
+        );
+    }
     if !nightly {
         unavailable.insert(
             "mir_built".into(),
@@ -742,7 +780,11 @@ pub fn compile(
             ),
         );
     }
-    let read = |p: PathBuf| std::fs::read_to_string(&p).ok();
+    let read = |p: PathBuf| {
+        succeeded
+            .then(|| std::fs::read_to_string(&p).ok())
+            .flatten()
+    };
     let ll = read(out_base.with_extension("ll"));
     let asm = read(out_base.with_extension("s"));
     let mir = read(out_base.with_extension("mir"));
@@ -755,7 +797,11 @@ pub fn compile(
     if mir.is_none() {
         unavailable.insert("mir_optimized".into(), "rustc did not produce .mir".into());
     }
-    let binary = out_base.exists().then(|| out_base.clone());
+    let binary = if succeeded && out_base.exists() {
+        Some(out_base.clone())
+    } else {
+        None
+    };
     let binary_sha256 = binary
         .as_ref()
         .and_then(|b| std::fs::read(b).ok())
@@ -765,7 +811,7 @@ pub fn compile(
         });
     let mut threads = Vec::new();
     for sym in thread_symbols {
-        let mir_built = if nightly {
+        let mir_built = if succeeded && nightly {
             std::fs::read_dir(&mir_dir)
                 .ok()
                 .and_then(|rd| {
@@ -1072,5 +1118,43 @@ fn rl_thread_1(_1: &Locs, _2: &mut [u32; 2]) -> () {
         let result = compile(source, out, &cfg, &[], Duration::from_secs(60)).unwrap();
         assert_eq!(result.exit_code, Some(0), "{}", result.stderr);
         assert!(result.binary.is_some_and(|path| path.is_file()));
+    }
+
+    #[test]
+    fn failed_compile_does_not_reuse_prior_artifacts() {
+        let root = tempfile::Builder::new()
+            .prefix("rustlitmus-stale-artifacts-")
+            .tempdir_in(".")
+            .unwrap();
+        let source = root.path().join("case.rs");
+        let out = root.path().join("build");
+        let target = toolchain_id("stable").unwrap().host.unwrap();
+        let cfg = CompileConfig {
+            toolchain: "stable".into(),
+            target,
+            opt_level: "0".into(),
+            extra_flags: Vec::new(),
+        };
+        let symbols = vec!["rl_thread_0".into()];
+
+        std::fs::write(
+            &source,
+            "#[no_mangle]\npub extern \"C\" fn rl_thread_0() {}\nfn main() {}\n",
+        )
+        .unwrap();
+        let first = compile(&source, &out, &cfg, &symbols, Duration::from_secs(60)).unwrap();
+        assert_eq!(first.exit_code, Some(0), "{}", first.stderr);
+        assert!(first.binary.is_some());
+
+        std::fs::write(&source, "fn main( {\n").unwrap();
+        let second = compile(&source, &out, &cfg, &symbols, Duration::from_secs(60)).unwrap();
+        assert_ne!(second.exit_code, Some(0));
+        assert!(second.binary.is_none());
+        assert!(second.binary_sha256.is_none());
+        assert!(second.threads.iter().all(|t| t.mir_built.is_none()
+            && t.mir_optimized.is_none()
+            && t.llvm_ir.is_none()
+            && t.asm.is_none()));
+        assert!(second.unavailable.contains_key("compile"));
     }
 }
