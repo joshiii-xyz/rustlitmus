@@ -53,6 +53,10 @@ For a source-model and architecture-model run, provide a compatible `herd7` bina
 Miri-GenMC, and a foreign-target emulator are optional explicit inputs. Missing tools remain
 visible as limitations in the bundle; they are never treated as agreement.
 
+Sweeps default to 32 cases and require a positive `--max-cases` value. Increase that value
+deliberately for a larger campaign. Every external tool invocation is bounded by
+`--timeout-secs`; `--max-secs` is a secondary stop condition checked between cases.
+
 ## Evidence rules
 
 - Native hardware outcomes are finite samples. Seeing an outcome is evidence that it

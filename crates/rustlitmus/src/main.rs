@@ -8,6 +8,8 @@ use rustlitmus::pipeline::{now_utc, run_case, Budget, RunContext, Stages, Tools}
 use std::path::PathBuf;
 use std::time::Duration;
 
+const DEFAULT_SWEEP_MAX_CASES: usize = 32;
+
 #[derive(Parser)]
 #[command(
     name = "rustlitmus",
@@ -180,10 +182,10 @@ enum Cmd {
         skip: String,
         #[arg(long, default_value = "models/rc11-p0982.cat")]
         source_model: String,
-        /// Stop after this many cases (0 = no limit).
-        #[arg(long, default_value_t = 0)]
+        /// Stop after this many cases. A finite cap is required for every campaign.
+        #[arg(long, default_value_t = DEFAULT_SWEEP_MAX_CASES)]
         max_cases: usize,
-        /// Wall-clock cap for the whole sweep in seconds (0 = no cap).
+        /// Secondary wall-clock cap checked between cases (0 disables this secondary cap).
         #[arg(long, default_value_t = 0)]
         max_secs: u64,
     },
@@ -235,6 +237,13 @@ fn litmus_for(case: &str) -> Result<rustlitmus::litmus::Litmus> {
         return Ok(l);
     }
     bail!("unknown case {case:?}: expected FAMILY+ord-ord-... or a path to a litmus JSON file")
+}
+
+fn validate_sweep_budget(max_cases: usize) -> Result<()> {
+    if max_cases == 0 {
+        bail!("--max-cases must be positive; choose a finite campaign cap")
+    }
+    Ok(())
 }
 
 fn summarise(b: &Bundle) -> String {
@@ -374,6 +383,7 @@ fn main() -> Result<()> {
             max_cases,
             max_secs,
         } => {
+            validate_sweep_budget(max_cases)?;
             let fams: Vec<Family> = if family == "all" {
                 Family::ALL.to_vec()
             } else {
@@ -400,7 +410,7 @@ fn main() -> Result<()> {
                 .open(&index_path)?;
             'outer: for f in fams {
                 for l in f.all_instances() {
-                    if max_cases > 0 && n >= max_cases {
+                    if n >= max_cases {
                         break 'outer;
                     }
                     if max_secs > 0 && start.elapsed().as_secs() >= max_secs {
@@ -560,4 +570,15 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requires_a_finite_sweep_case_cap() {
+        assert!(validate_sweep_budget(0).is_err());
+        assert!(validate_sweep_budget(1).is_ok());
+    }
 }
