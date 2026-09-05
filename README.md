@@ -78,3 +78,8 @@ The sweep's follow-up count excludes expected stronger mappings and unavailable 
 - [`docs/hypotheses.md`](docs/hypotheses.md) records falsifiable hypotheses and controls.
 - [`docs/research-log.md`](docs/research-log.md) records historical work and its verification
   status.
+
+## License
+
+Licensed under either the Apache License, Version 2.0 (`LICENSE-APACHE`) or the MIT License
+(`LICENSE-MIT`), at your option.
